@@ -44,7 +44,7 @@ st.set_page_config(page_title="Planorama", page_icon="🎟️", layout="wide")
 # ──────────────────────────────────────────────────────────────────────────────
 # 2) Gemini — API key + normalizador de turno
 # ──────────────────────────────────────────────────────────────────────────────
-GEMINI_MODEL_NAME = "gemini-1.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_OK = False
 GEMINI_MODEL = None
 
@@ -98,31 +98,72 @@ def _ensure_schema(d: dict) -> dict:
 
 _GEMINI_SYSTEM = (
     "Eres un normalizador de preferencias para un recomendador de eventos en Bogotá. "
-    "Responde SOLO con JSON (sin texto fuera del JSON) con estas claves: "
-    '{"smalltalk":"...", "fecha":"...", "fecha_rango":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"},'
-    '"categorias":["concierto|teatro|experiencia",...],"es_gratis":"gratis|pago|indiferente",'
-    '"precio_max_cop":120000,"dist_importa":"si|no","parte_del_dia":"mañana|tarde|noche",'
-    '"edad_usuario":21,"excluir_restriccion_edad":"si|no"}.\n'
-    "Reglas: interpreta sinónimos; si hay rango (p.ej. 'la próxima semana') llena fecha_rango; "
-    "si hay día único usa 'fecha'. 'smalltalk' SIEMPRE debe venir con un texto breve y cálido."
+    "Debes responder SOLO con JSON válido (sin texto fuera del JSON) y con EXACTAMENTE estas claves:\n"
+    "{\n"
+    '  "smalltalk": "texto breve, cálido y SIN preguntas",\n'
+    '  "fecha": "hoy|mañana|fin_de_semana|YYYY-MM-DD|",\n'
+    '  "fecha_rango": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},\n'
+    '  "categorias": ["concierto|teatro|experiencia", ...],\n'
+    '  "es_gratis": "gratis|pago|indiferente|",\n'
+    '  "precio_max_cop": 120000,\n'
+    '  "dist_importa": "si|no|",\n'
+    '  "parte_del_dia": "mañana|tarde|noche|",\n'
+    '  "edad_usuario": 21,\n'
+    '  "excluir_restriccion_edad": "si|no"\n'
+    "}\n"
+    "Reglas de normalización (OBLIGATORIAS):\n"
+    "- Mapea TODO lo relacionado con música en vivo a 'concierto': musica|música|musica en vivo|festival|show|live|rock|pop|salsa|jazz|reggaeton|trap → concierto.\n"
+    "- Mapea stand up|stand-up|comedia a 'teatro'.\n"
+    "- Mapea feria|expo|exposición|taller|workshop|tour|recorrido|experiencia inmersiva a 'experiencia'.\n"
+    "- Permite múltiples categorías si el usuario las menciona, pero NUNCA inventes etiquetas fuera de {concierto, teatro, experiencia}.\n"
+    "- Si el usuario usa palabras fuera del set (ej. 'música'), normalízalas al set (ej. 'concierto').\n"
+    "- Si el usuario menciona un RANGO (ej. 'la próxima semana', 'entre el 10 y 12'), usa 'fecha_rango' con start/end en YYYY-MM-DD.\n"
+    "- Si da un día específico (hoy, mañana o una fecha), usa 'fecha' y deja 'fecha_rango' vacío.\n"
+    "- 'precio_max_cop' debe ser entero en COP (ej. '120k'→120000; '$150.000'→150000).\n"
+    "- 'smalltalk' DEBE ser una frase cálida SIN preguntas (ej.: '¡Listo! Tomo nota.') y SIEMPRE debe venir.\n"
+    "- NO incluyas comentarios, ni backticks, ni bloques de código; SOLO JSON estricto.\n"
+    "\n"
+    "Ejemplo 1 (usuario): \"quiero algo de música en vivo, tal vez festival\"\n"
+    "Salida JSON: {\"smalltalk\":\"¡Genial! Lo tengo.\",\"fecha\":\"\",\"fecha_rango\":null,"
+    "\"categorias\":[\"concierto\"],\"es_gratis\":\"\",\"precio_max_cop\":null,\"dist_importa\":\"\","
+    "\"parte_del_dia\":\"\",\"edad_usuario\":null,\"excluir_restriccion_edad\":\"\"}\n"
+    "\n"
+    "Ejemplo 2 (usuario): \"stand up o comedia barata este finde\"\n"
+    "Salida JSON: {\"smalltalk\":\"¡De una!\",\"fecha\":\"fin_de_semana\",\"fecha_rango\":null,"
+    "\"categorias\":[\"teatro\"],\"es_gratis\":\"pago\",\"precio_max_cop\":null,\"dist_importa\":\"\","
+    "\"parte_del_dia\":\"\",\"edad_usuario\":null,\"excluir_restriccion_edad\":\"\"}\n"
 )
 
-def gemini_normalize(user_text: str) -> dict:
-    """Llama a Gemini y devuelve el contrato normalizado; fallback seguro si no hay modelo."""
+def gemini_normalize(user_text: str, current_profile: Dict) -> dict:
+    """
+    Llama a Gemini para normalizar el turno, dándole contexto del perfil actual.
+    Devuelve SIEMPRE el contrato con defaults si algo falta.
+    """
     if not GEMINI_OK or GEMINI_MODEL is None or not (user_text or "").strip():
-        return _ensure_schema({
-            "smalltalk": "Entendido. ¿Para cuándo te gustaría el plan y qué tipo de evento prefieres?",
-        })
+        return _ensure_schema({"smalltalk": "¡Listo! Tomo nota. 😉"})
+
     try:
-        prompt = _GEMINI_SYSTEM + "\nUsuario: " + user_text.strip()
-        resp = GEMINI_MODEL.generate_content(prompt)
+        perfil_json = json.dumps({
+            k: v for k, v in (current_profile or {}).items()
+            if k in {"fecha","fecha_rango","categorias","es_gratis","precio_max_cop","dist_importa","parte_del_dia","edad_usuario","excluir_restriccion_edad"}
+        }, ensure_ascii=False)
+
+        prompt = (
+            _GEMINI_SYSTEM
+            + "\n\nContexto_perfil_actual_JSON:\n" + perfil_json
+            + "\n\nNuevo_mensaje_usuario:\n" + (user_text or "").strip()
+            + "\n\nTarea:\n"
+              "- Interpreta el 'Nuevo_mensaje_usuario' y completa SOLO los campos que estén vacíos en 'Contexto_perfil_actual_JSON'. "
+              "Si el usuario cambia explícitamente una preferencia, actualízala. Responde SOLO con el JSON del contrato."
+        )
+
+        generation_config = {"temperature": 0.2}
+        resp = GEMINI_MODEL.generate_content(prompt, generation_config=generation_config)
         raw = getattr(resp, "text", "") or ""
         data = json.loads(_strip_to_json(raw))
         return _ensure_schema(data)
     except Exception:
-        return _ensure_schema({
-            "smalltalk": "Perfecto, sigo contigo. ¿Para cuándo te gustaría el plan y qué tipo de evento prefieres?",
-        })
+        return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊"})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3) Carga y preparación del dataset (CSV + normalización + TF-IDF)
@@ -226,6 +267,71 @@ def build_tfidf(texts: pd.Series, ids: List[str]):
 df = load_events_from_csv(DATA_PATH)
 vectorizer, Xmatrix, IDS = build_tfidf(df["text_blob"], df["uid"].tolist())
 
+def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
+    """
+    Si fecha_rango (start/end) viene en el pasado, la reubica al FUTURO relativo a hoy:
+      - ~7 días  -> la próxima semana (lunes a lunes)
+      - ~30 días -> el próximo mes (1er día del mes siguiente a 1er día del subsiguiente)
+      - ~365 días-> el próximo año (1 enero a 1 enero siguiente)
+      - otro     -> mismo largo empezando HOY
+    Devuelve un dict {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}.
+    """
+    if not isinstance(dr_dict, dict):
+        return dr_dict
+
+    start = pd.to_datetime(dr_dict.get("start"), errors="coerce")
+    end   = pd.to_datetime(dr_dict.get("end"),   errors="coerce")
+    if pd.isna(start) or pd.isna(end):
+        return dr_dict
+
+    today = pd.Timestamp.now(tz=None).normalize()
+    if end >= today:
+        # ya es futuro o está corriendo; no tocar
+        return {"start": start.date().isoformat(), "end": end.date().isoformat()}
+
+    # Está totalmente en el pasado → normalizar al futuro
+    dur_days = (end - start).days
+    dur_days = max(1, int(dur_days))
+
+    # Heurísticas por tipo de rango
+    if 26 <= dur_days <= 32:
+        # MES parecido
+        y, m = today.year, today.month
+        # 1er día del próximo mes
+        if m == 12:
+            m2, y2 = 1, y + 1
+        else:
+            m2, y2 = m + 1, y
+        new_start = pd.Timestamp(year=y2, month=m2, day=1)
+        # 1er día del mes subsiguiente
+        if m2 == 12:
+            new_end = pd.Timestamp(year=y2 + 1, month=1, day=1)
+        else:
+            new_end = pd.Timestamp(year=y2, month=m2 + 1, day=1)
+        return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
+    if 6 <= dur_days <= 8:
+        # SEMANA parecida → próxima semana (lunes a lunes)
+        # próximo lunes:
+        dow = today.weekday()  # 0=lunes
+        days_to_next_monday = (7 - dow) % 7
+        next_monday = today + pd.Timedelta(days=days_to_next_monday or 7)
+        new_start = next_monday
+        new_end = new_start + pd.Timedelta(days=7)
+        return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
+    if 360 <= dur_days <= 370:
+        # AÑO parecido → próximo año calendario
+        y = today.year + 1
+        new_start = pd.Timestamp(year=y, month=1, day=1)
+        new_end = pd.Timestamp(year=y + 1, month=1, day=1)
+        return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
+    # GENÉRICO: mismo largo empezando HOY
+    new_start = today
+    new_end = today + pd.Timedelta(days=dur_days)
+    return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 4–5) Estado de la app + Orquestador del chat
 # ──────────────────────────────────────────────────────────────────────────────
@@ -264,7 +370,7 @@ def merge_profiles(base: Dict, delta: Dict) -> Dict:
     # fecha / rango
     dr = delta.get("fecha_rango")
     if isinstance(dr, dict) and (dr.get("start") and dr.get("end")):
-        p["fecha_rango"] = {"start": str(dr["start"]), "end": str(dr["end"])}
+        p["fecha_rango"] = _normalize_future_like_range_if_past(dr)
         p["fecha"] = ""
     else:
         if not p.get("fecha") and delta.get("fecha"):
@@ -333,7 +439,7 @@ def handle_user_message(text: str) -> None:
     if not user_msg:
         return
     st.session_state.chat.append(("user", user_msg))
-    delta = gemini_normalize(user_msg)
+    delta = gemini_normalize(user_msg, st.session_state.perfil)
     st.session_state.perfil = merge_profiles(st.session_state.perfil, delta)
     reply_text, _, done = process_turn("", st.session_state.perfil)
     smalltalk = st.session_state.perfil.get("smalltalk", "").strip()
@@ -368,6 +474,26 @@ def _part_of_day_bonus(hour_start: float, desired: str) -> float:
     if desired == "tarde":  return 1.0 if (13 <= h <= 18) else 0.0
     if desired == "noche":  return 1.0 if h > 18 else 0.0
     return 0.0
+# --- helpers para matching flexible de categorías ---
+def _normtxt(x: str) -> str:
+    import unicodedata as _ud
+    s = str(x or "")
+    s = _ud.normalize("NFKD", s).encode("ascii","ignore").decode("ascii")
+    return s.lower().strip()
+
+_CAT_SYNONYMS = {
+    "concierto": {"concierto","musica","musica en vivo","musical","show","festival","live",
+                  "reggaeton","trap","rock","pop","salsa","jazz"},
+    "teatro": {"teatro","obra","drama","comedia","stand up","stand-up"},
+    "experiencia": {"experiencia","feria","expo","exposicion","exposición","taller","workshop","tour","recorrido"},
+}
+def _expand_cats(cats: list[str]) -> set[str]:
+    out = set()
+    for c in cats:
+        key = _normtxt(c)
+        out.add(key)
+        out |= _CAT_SYNONYMS.get(key, set())
+    return out
 
 def compute_recommendations(
     perfil: Dict,
@@ -396,8 +522,13 @@ def compute_recommendations(
         ok_states = {"scheduled", "activo", "active", "programado", ""}
         df_filt = df_filt[df_filt["status"].str.lower().isin(ok_states)]
 
-    # Futuro
-    if "is_future" in df_filt.columns:
+    # Futuro (solo por defecto). Si el usuario dio fecha o rango explícito, NO forzamos futuro.
+    has_user_date = bool(perfil.get("fecha")) or (
+        isinstance(perfil.get("fecha_rango"), dict)
+        and perfil["fecha_rango"].get("start")
+        and perfil["fecha_rango"].get("end")
+    )
+    if "is_future" in df_filt.columns and not has_user_date:
         df_filt = df_filt[df_filt["is_future"] == True]
 
     # Fecha / Rango
@@ -412,10 +543,17 @@ def compute_recommendations(
             dr = parse_date_pref(pref_fecha)
             df_filt = df_filt[df_filt["date_start_parsed"].apply(lambda ts: _in_date_range(ts, dr.start, dr.end))]
 
-    # Categorías
+    # --- Categorías (filtro flexible) ---
     cats = [c.lower() for c in (perfil.get("categorias") or [])]
     if cats and "category" in df_filt.columns:
-        df_filt = df_filt[df_filt["category"].str.lower().isin(cats)]
+        if "text_blob_norm" not in df_filt.columns:
+            df_filt["text_blob_norm"] = df_filt["text_blob"].apply(_normtxt)
+        wanted = _expand_cats(cats)
+        def _cat_ok(row) -> bool:
+            cat_ok  = _normtxt(row.get("category","")) in wanted
+            blob_ok = any(w in row.get("text_blob_norm","") for w in wanted)
+            return cat_ok or blob_ok
+        df_filt = df_filt[df_filt.apply(_cat_ok, axis=1)]
 
     # Gratis / pago + presupuesto
     eg = (perfil.get("es_gratis") or "indiferente").lower()
@@ -638,15 +776,37 @@ with left_col:
         st.rerun()
 
 with right_col:
+    def _fecha_o_rango_display(perfil: dict) -> str:
+        """Devuelve texto legible de la fecha/rango, aplicando normalización si es un rango pasado."""
+        fr = perfil.get("fecha_rango")
+        if isinstance(fr, dict) and fr.get("start") and fr.get("end"):
+            fr2 = _normalize_future_like_range_if_past(fr)
+            return f"{fr2['start']} → {fr2['end']}"
+        f = (perfil.get("fecha") or "").strip()
+        if f:
+            dr = parse_date_pref(f)  # usa la lógica que ya tienes en geo_utils
+            try:
+                return dr.start.strftime("%Y-%m-%d")  # fecha concreta resuelta
+            except Exception:
+                return str(dr.start)
+        return "—"
+
     st.subheader("🧾 Tu perfil (solo para ti)")
     perfil = st.session_state.perfil
 
     with st.container(border=True):
-        fecha_txt = "—"
-        if isinstance(perfil.get("fecha_rango"), dict) and perfil["fecha_rango"].get("start") and perfil["fecha_rango"].get("end"):
-            fecha_txt = f"{perfil['fecha_rango']['start']} → {perfil['fecha_rango']['end']}"
-        elif perfil.get("fecha"):
-            fecha_txt = perfil["fecha"]
+        fecha_txt = _fecha_o_rango_display(perfil)
+        if (perfil.get("fecha") or "").strip():
+            dr = parse_date_pref(perfil["fecha"])
+            st.session_state["_fecha_resuelta"] = {
+                "start": dr.start.date().isoformat(),
+                "end": dr.end.date().isoformat()
+            }
+        elif isinstance(perfil.get("fecha_rango"), dict):
+            st.session_state["_fecha_resuelta"] = {
+                "start": perfil["fecha_rango"].get("start"),
+                "end": perfil["fecha_rango"].get("end"),
+            }
 
         cats_txt = ", ".join(perfil.get("categorias") or []) or "—"
         eg = (perfil.get("es_gratis") or "—").lower()
@@ -666,6 +826,74 @@ with right_col:
             f"- **Edad**: {edad_txt} · **Excluir por restricción**: {restr}\n"
             f"- **Parte del día**: {pdia}"
         )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 🔧 Depuración: ver por dónde se caen los eventos
+    # ──────────────────────────────────────────────────────────────────────────
+    with st.expander("🔧 Depuración (filtros paso a paso)"):
+        try:
+            # Copiamos df original
+            _d0 = df.copy()
+
+            # 0) ciudad
+            _d1 = _d0[_d0["city_norm"].str.contains("bogota", na=False)] if "city_norm" in _d0.columns else _d0
+            # 1) estado
+            if "status" in _d1.columns:
+                ok_states = {"scheduled","activo","active","programado",""}
+                _d1 = _d1[_d1["status"].str.lower().isin(ok_states)]
+            # 2) fecha o rango (reutilizamos parse_date_pref)
+            def _apply_range(df_in, start, end):
+                return df_in[df_in["date_start_parsed"].apply(lambda ts: isinstance(ts, pd.Timestamp) and (ts>=start) and (ts<end))]
+            _d2 = _d1.copy()
+            if isinstance(perfil.get("fecha_rango"), dict) and perfil["fecha_rango"].get("start") and perfil["fecha_rango"].get("end"):
+                start = pd.to_datetime(perfil["fecha_rango"]["start"], errors="coerce")
+                end   = pd.to_datetime(perfil["fecha_rango"]["end"], errors="coerce")
+                if pd.notna(start) and pd.notna(end):
+                    _d2 = _apply_range(_d2, start, end)
+            elif perfil.get("fecha"):
+                dr = parse_date_pref(perfil["fecha"])
+                _d2 = _apply_range(_d2, dr.start, dr.end)
+
+            # 3) categoría flexible (igual que en compute_recommendations)
+            _d3 = _d2.copy()
+            cats = [c.lower() for c in (perfil.get("categorias") or [])]
+            if cats and "category" in _d3.columns:
+                if "text_blob_norm" not in _d3.columns:
+                    _d3["text_blob_norm"] = _d3["text_blob"].apply(_normtxt)
+                wanted = _expand_cats(cats)
+                def _cat_ok(row) -> bool:
+                    cat_ok  = _normtxt(row.get("category","")) in wanted
+                    blob_ok = any(w in row.get("text_blob_norm","") for w in wanted)
+                    return cat_ok or blob_ok
+                _d3 = _d3[_d3.apply(_cat_ok, axis=1)]
+
+            # 4) gratis/pago + presupuesto
+            _d4 = _d3.copy()
+            eg = (perfil.get("es_gratis") or "indiferente").lower()
+            if eg == "gratis" and "is_free" in _d4.columns:
+                _d4 = _d4[_d4["is_free"] == True]
+            elif eg == "pago":
+                if "is_free" in _d4.columns:
+                    _d4 = _d4[_d4["is_free"] == False]
+                if perfil.get("precio_max_cop") is not None:
+                    budget = float(perfil["precio_max_cop"])
+                    _d4 = _d4[pd.to_numeric(_d4["price_min_cop"], errors="coerce").fillna(np.inf) <= budget]
+
+            # 5) edad/restricción (solo si el usuario pidió excluir)
+            _d5 = _d4.copy()
+            edad_usuario = perfil.get("edad_usuario")
+            excluir = (perfil.get("excluir_restriccion_edad") or "").lower()
+            if excluir == "si" and edad_usuario is not None:
+                _d5 = _d5[(_d5["age_min_num"].isna()) | (_d5["age_min_num"] <= int(edad_usuario))]
+
+            st.write(f"Total CSV: **{len(_d0)}**")
+            st.write(f"Tras CIUDAD/ESTADO: **{len(_d1)}** (quedan)")
+            st.write(f"Tras FECHA: **{len(_d2)}** (quedan)")
+            st.write(f"Tras CATEGORÍA: **{len(_d3)}** (quedan)")
+            st.write(f"Tras PRECIO: **{len(_d4)}** (quedan)")
+            st.write(f"Tras EDAD: **{len(_d5)}** (quedan)")
+        except Exception as e:
+            st.warning(f"No pude ejecutar el debug: {e}")
 
     if (perfil.get("dist_importa") or "").lower() == "si":
         st.subheader("📍 Marca tu zona")
@@ -709,3 +937,4 @@ with right_col:
                 )
                 st.session_state.last_recs = df_rank
                 render_results(df_rank, perfil)
+#prueb 
