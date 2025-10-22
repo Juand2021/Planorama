@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+scikit-learn
+python-dateutil
+google-generativeai
+
+pip install streamlit pandas numpy scikit-learn folium streamlit-folium google-generativeai
