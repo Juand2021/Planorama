@@ -1,6 +1,5 @@
-# ──────────────────────────────────────────────────────────────────────────────
+
 # Planorama — app.py (estructura final ordenada y limpia)
-# ──────────────────────────────────────────────────────────────────────────────
 
 # 0) Imports y bootstrap de rutas
 import os, sys, json, unicodedata, re
@@ -36,14 +35,12 @@ from geo_utils import (
 )
 from llm_interviewer import process_turn
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 1) Config de página (debe ir ANTES de cualquier otra llamada a st.*)
-# ──────────────────────────────────────────────────────────────────────────────
+
+# 1) Config de pagina
 st.set_page_config(page_title="Planorama", page_icon="🎟️", layout="wide")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2) Gemini — API key + normalizador de turno
-# ──────────────────────────────────────────────────────────────────────────────
+# 2) Gemini — API key 
+
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_OK = False
 GEMINI_MODEL = None
@@ -165,9 +162,7 @@ def gemini_normalize(user_text: str, current_profile: Dict) -> dict:
     except Exception:
         return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊"})
 
-# ──────────────────────────────────────────────────────────────────────────────
 # 3) Carga y preparación del dataset (CSV + normalización + TF-IDF)
-# ──────────────────────────────────────────────────────────────────────────────
 DATA_PATH = os.path.join(BASE_DIR, "data", "Planorama_BD.csv")
 
 @st.cache_data(show_spinner=False)
@@ -286,10 +281,7 @@ def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
 
     today = pd.Timestamp.now(tz=None).normalize()
     if end >= today:
-        # ya es futuro o está corriendo; no tocar
         return {"start": start.date().isoformat(), "end": end.date().isoformat()}
-
-    # Está totalmente en el pasado → normalizar al futuro
     dur_days = (end - start).days
     dur_days = max(1, int(dur_days))
 
@@ -311,9 +303,8 @@ def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
         return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
 
     if 6 <= dur_days <= 8:
-        # SEMANA parecida → próxima semana (lunes a lunes)
-        # próximo lunes:
-        dow = today.weekday()  # 0=lunes
+   
+        dow = today.weekday()  
         days_to_next_monday = (7 - dow) % 7
         next_monday = today + pd.Timedelta(days=days_to_next_monday or 7)
         new_start = next_monday
@@ -321,20 +312,16 @@ def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
         return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
 
     if 360 <= dur_days <= 370:
-        # AÑO parecido → próximo año calendario
         y = today.year + 1
         new_start = pd.Timestamp(year=y, month=1, day=1)
         new_end = pd.Timestamp(year=y + 1, month=1, day=1)
         return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
 
-    # GENÉRICO: mismo largo empezando HOY
     new_start = today
     new_end = today + pd.Timedelta(days=dur_days)
     return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 4–5) Estado de la app + Orquestador del chat
-# ──────────────────────────────────────────────────────────────────────────────
+# 4–5) Estado de la app
 if "perfil" not in st.session_state:
     st.session_state.perfil = {
         "smalltalk": "",
@@ -453,9 +440,7 @@ def handle_user_message(text: str) -> None:
         st.session_state.chat.append(("bot", bot_text))
         st.session_state.ready = False
 
-# ──────────────────────────────────────────────────────────────────────────────
 # 7–8) Recomendaciones (filtros + scoring) y render
-# ──────────────────────────────────────────────────────────────────────────────
 W_CONT  = 0.50
 W_PREC  = 0.20
 W_DIST  = 0.25
@@ -522,7 +507,7 @@ def compute_recommendations(
         ok_states = {"scheduled", "activo", "active", "programado", ""}
         df_filt = df_filt[df_filt["status"].str.lower().isin(ok_states)]
 
-    # Futuro (solo por defecto). Si el usuario dio fecha o rango explícito, NO forzamos futuro.
+    # Futuro 
     has_user_date = bool(perfil.get("fecha")) or (
         isinstance(perfil.get("fecha_rango"), dict)
         and perfil["fecha_rango"].get("start")
@@ -727,9 +712,7 @@ def render_results(df_rank: pd.DataFrame, perfil: Dict) -> None:
         show_cols = [c for c in show_cols if c in df_rank.columns]
         st.dataframe(df_rank[show_cols])
 
-# ──────────────────────────────────────────────────────────────────────────────
 # 6) UI — Chat, perfil, mapa condicional y resultados (después de definir 7–8)
-# ──────────────────────────────────────────────────────────────────────────────
 st.title("Planorama 🎟️ — Recomendador de planes en Bogotá")
 st.caption(f"Gemini conectado: {'sí' if GEMINI_OK else 'no'}")
 
@@ -827,9 +810,8 @@ with right_col:
             f"- **Parte del día**: {pdia}"
         )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # 🔧 Depuración: ver por dónde se caen los eventos
-    # ──────────────────────────────────────────────────────────────────────────
+
+    # Depuración: ver por dónde se caen los eventos
     with st.expander("🔧 Depuración (filtros paso a paso)"):
         try:
             # Copiamos df original
@@ -841,7 +823,7 @@ with right_col:
             if "status" in _d1.columns:
                 ok_states = {"scheduled","activo","active","programado",""}
                 _d1 = _d1[_d1["status"].str.lower().isin(ok_states)]
-            # 2) fecha o rango (reutilizamos parse_date_pref)
+            # 2) fecha o rango
             def _apply_range(df_in, start, end):
                 return df_in[df_in["date_start_parsed"].apply(lambda ts: isinstance(ts, pd.Timestamp) and (ts>=start) and (ts<end))]
             _d2 = _d1.copy()
@@ -924,7 +906,7 @@ with right_col:
         if need_point and not has_point:
             st.warning("Marcaste **cercanía = sí**. Falta que **marques tu zona en el mapa** para calcular distancias.")
         else:
-            # Este bloque se ejecuta si el perfil está listo y no se requiere un punto en el mapa (o ya se tiene).
+            # Este bloque se ejecuta si el perfil está listo 
             with st.spinner("Buscando los mejores planes para ti..."):
                 df_rank = compute_recommendations(
                     perfil=perfil,
@@ -937,4 +919,3 @@ with right_col:
                 )
                 st.session_state.last_recs = df_rank
                 render_results(df_rank, perfil)
-#prueb 
