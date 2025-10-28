@@ -54,8 +54,12 @@ def _sync_done_flags(p: Profile) -> Profile:
     p.done_gratis_pago = p.es_gratis in {"gratis","pago","indiferente"}
     p.done_presupuesto = (p.es_gratis != "pago") or (p.precio_max_cop is not None)
     p.done_cercania    = p.dist_importa in {"si","no"}
-    p.done_edad        = (p.edad_usuario is not None) or (p.excluir_restriccion_edad in {"si","no"})
-    p.done_parte_dia   = bool(p.parte_del_dia)  # opcional
+    p.done_edad        = (p.edad_usuario is not None) or (p.excluir_restriccion_edad in {"si","no","indiferente"})
+    # parte_del_dia can be list or "indiferente"
+    if isinstance(p.parte_del_dia, list):
+        p.done_parte_dia = bool(p.parte_del_dia)
+    else:
+        p.done_parte_dia = p.parte_del_dia in {"mañana","tarde","noche","indiferente"} if p.parte_del_dia else False
     return p
 
 def _next_question(p: Profile) -> str:
@@ -74,10 +78,10 @@ def _next_question(p: Profile) -> str:
         return ("¿Te **importa** que el evento esté **cerca** de ti? (responde *sí* o *no*). "
                 "Si dices **sí**, después **debes** hacer clic en el mapa para marcar tu zona.")
     if not p.done_edad:
-        return ("¿Tienes **18 años o más**? (responde *sí* o *no*). "
-                "Si eres menor o vas con niños, dímelo para filtrar **todo público**.")
+        return ("¿Quieres filtrar eventos por restricción de edad? "
+                "(responde *sí* si eres menor o vas con niños, *no* o *no importa* si no te importa).")
     if not p.done_parte_dia:
-        return "¿Prefieres en la **mañana**, **tarde** o **noche**? (opcional)."
+        return "¿Prefieres en la **mañana**, **tarde** o **noche**? (puedes elegir varias o decir *no importa*)."
     return ""
 
 def _final_summary(p: Profile) -> str:
@@ -86,7 +90,11 @@ def _final_summary(p: Profile) -> str:
     cerc  = "sí (usaré tu mapa)" if p.dist_importa == "si" else "no"
     edad  = f"{p.edad_usuario} años" if p.edad_usuario is not None else "no indicada"
     restr = "sí" if p.excluir_restriccion_edad == "si" else "no"
-    pdia  = p.parte_del_dia if p.parte_del_dia else "indiferente"
+    # Handle parte_del_dia as list or string
+    if isinstance(p.parte_del_dia, list):
+        pdia = ", ".join(p.parte_del_dia) if p.parte_del_dia else "indiferente"
+    else:
+        pdia  = p.parte_del_dia if p.parte_del_dia else "indiferente"
     return (
         "✅ Preferencias listas:\n"
         f"- **Fecha**: {p.fecha or '—'}\n"

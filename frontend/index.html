@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planorama 🎟️ - Encuentra planes en Bogotá</title>
+    
+    <!-- Leaflet CSS for maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🎟️ Planorama</h1>
+            <p class="subtitle">Tu asistente para encontrar planes en Bogotá</p>
+            <div class="api-status">
+                <span id="gemini-status">🔄 Conectando...</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Column: Chat -->
+            <div class="left-column">
+                <div class="chat-section">
+                    <div class="section-header">
+                        <h2>💬 Conversación</h2>
+                        <button id="new-search-btn" class="btn-secondary">🧹 Nueva búsqueda</button>
+                    </div>
+                    <p class="chat-subtitle">Habla como gustes. Yo me encargo de entenderte. 😉</p>
+                    
+                    <!-- Chat Messages -->
+                    <div id="chat-messages" class="chat-messages">
+                        <!-- Messages will be added here dynamically -->
+                    </div>
+
+                    <!-- Chat Input -->
+                    <form id="chat-form" class="chat-input-form">
+                        <input 
+                            type="text" 
+                            id="chat-input" 
+                            placeholder="Ej.: Mañana quiero algo de comedia cerca de mí"
+                            autocomplete="off"
+                        >
+                        <button type="submit" id="send-btn" class="btn-primary">Enviar</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Right Column: Profile, Map, Results -->
+            <div class="right-column">
+                <!-- Profile Summary -->
+                <div class="profile-section">
+                    <h2>🧾 Tu perfil</h2>
+                    <div id="profile-display" class="profile-display">
+                        <ul id="profile-list">
+                            <li><strong>Fecha:</strong> <span id="profile-fecha">—</span></li>
+                            <li><strong>Categorías:</strong> <span id="profile-categorias">—</span></li>
+                            <li><strong>Gratis/Pago:</strong> <span id="profile-gratis">—</span> · <strong>Presupuesto máx:</strong> <span id="profile-presupuesto">—</span></li>
+                            <li><strong>Cercanía importa:</strong> <span id="profile-cercania">—</span></li>
+                            <li><strong>Edad:</strong> <span id="profile-edad">no especificada</span> · <strong>Excluir por restricción:</strong> <span id="profile-restriccion">—</span></li>
+                            <li><strong>Parte del día:</strong> <span id="profile-parte-dia">—</span></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Map Section (conditional) -->
+                <div id="map-section" class="map-section" style="display: none;">
+                    <h2>📍 Marca tu zona</h2>
+                    <p class="map-subtitle">Haz clic en el mapa para fijar tu ubicación aproximada.</p>
+                    <div id="map" class="map-container"></div>
+                    <div id="map-status" class="map-status"></div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="results-section">
+                    <h2>🎯 Resultados</h2>
+                    <div id="results-container">
+                        <div class="info-message">
+                            <p>Aún estoy reuniendo tus preferencias. Sigue respondiendo en el chat.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay" style="display: none;">
+        <div class="spinner"></div>
+        <p>Buscando los mejores planes para ti...</p>
+    </div>
+
+    <!-- Scripts -->
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Custom JS -->
+    <script src="js/app.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/map.js"></script>
+</body>
+</html>
+

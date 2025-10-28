@@ -4,5 +4,7 @@ numpy
 scikit-learn
 python-dateutil
 google-generativeai
+folium
+streamlit-folium
 
-pip install streamlit pandas numpy scikit-learn folium streamlit-folium google-generativeai
+pip install google-generativeai

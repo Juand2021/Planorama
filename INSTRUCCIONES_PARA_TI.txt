@@ -1,0 +1,226 @@
+================================================================================
+    🎟️ PLANORAMA - INSTRUCCIONES PARA INICIAR (FastAPI + HTML)
+================================================================================
+
+¡Hola! He completado la migración de tu proyecto a FastAPI + HTML.
+Sigue estos pasos EXACTAMENTE y todo funcionará. 😊
+
+================================================================================
+  📋 PASO 1: INSTALAR NUEVAS DEPENDENCIAS (2 minutos)
+================================================================================
+
+1. Abre PowerShell o CMD en esta carpeta
+   (Click derecho en la carpeta → "Abrir en Terminal" o "PowerShell")
+
+2. Activa tu entorno virtual (si no está activado):
+   
+   venv\Scripts\activate
+
+   ✅ Deberías ver "(venv)" al inicio de la línea
+
+3. Instala FastAPI y Uvicorn:
+   
+   pip install fastapi uvicorn[standard]
+
+   ⏱️ Esto tomará unos 30 segundos
+
+================================================================================
+  🔑 PASO 2: CONFIGURAR API KEY DE GEMINI (30 segundos)
+================================================================================
+
+1. En la MISMA terminal, ejecuta:
+
+   set GOOGLE_API_KEY=TU_GOOGLE_API_KEY_AQUI
+
+   ⚠️ IMPORTANTE: Reemplaza TU_GOOGLE_API_KEY_AQUI con tu API key real
+
+2. Si NO tienes una API key:
+   - Ve a: https://makersuite.google.com/app/apikey
+   - Crea una cuenta (gratis)
+   - Genera una API key
+   - Cópiala y pégala en el comando de arriba
+
+3. Verifica que se guardó:
+
+   echo %GOOGLE_API_KEY%
+
+   ✅ Debería mostrar tu API key
+
+================================================================================
+  🚀 PASO 3: INICIAR EL PROYECTO (5 segundos)
+================================================================================
+
+1. En la MISMA terminal, ejecuta:
+
+   dev.bat
+
+2. Verás que se abren 2 ventanas CMD:
+   - Una dice "Backend - FastAPI"
+   - Otra dice "Frontend - HTTP Server"
+
+3. Tu navegador se abrirá automáticamente en:
+   
+   http://localhost:3000
+
+4. ¡Deberías ver la interfaz de Planorama! 🎉
+
+================================================================================
+  🧪 PASO 4: PROBAR QUE FUNCIONA (1 minuto)
+================================================================================
+
+1. En el navegador, en el chat, escribe:
+   
+   "Quiero un concierto gratis mañana"
+
+2. El bot debería responder y tu perfil debería actualizarse
+
+3. Sigue respondiendo las preguntas del bot
+
+4. Cuando completes el perfil, verás recomendaciones de eventos
+
+✅ Si todo esto funciona, ¡la migración fue exitosa!
+
+================================================================================
+  🔧 CÓMO DESARROLLAR A PARTIR DE AHORA
+================================================================================
+
+OPCIÓN A: Cambiar funcionalidad (Backend)
+------------------------------------------
+1. Abre cualquier archivo en src/ (ej: recommender.py)
+2. Haz tus cambios
+3. Guarda el archivo
+4. Espera 1 segundo (hot-reload automático)
+5. Refresca el navegador
+6. ¡Cambios visibles!
+
+OPCIÓN B: Cambiar diseño (Frontend)
+------------------------------------
+1. Abre frontend/css/style.css
+2. Cambia colores, fuentes, etc.
+3. Guarda el archivo
+4. Refresca el navegador (F5)
+5. ¡Cambios visibles!
+
+OPCIÓN C: Cambiar textos (Frontend)
+------------------------------------
+1. Abre frontend/index.html
+2. Cambia títulos, mensajes, etc.
+3. Guarda el archivo
+4. Refresca el navegador (F5)
+5. ¡Cambios visibles!
+
+================================================================================
+  🛠️ HERRAMIENTAS ÚTILES
+================================================================================
+
+1. Ver API docs (Swagger):
+   http://localhost:8000/docs
+
+2. Ver logs del backend:
+   Mira la ventana CMD "Backend - FastAPI"
+
+3. Consola del navegador (ver errores JS):
+   Presiona F12 en el navegador
+
+4. Ver estado de la API:
+   http://localhost:8000
+
+================================================================================
+  ⏹️ CÓMO DETENER TODO
+================================================================================
+
+1. Cierra las 2 ventanas CMD que se abrieron
+   (La del Backend y la del Frontend)
+
+O
+
+2. Presiona Ctrl+C en cada ventana CMD
+
+================================================================================
+  🔄 CÓMO REINICIAR
+================================================================================
+
+1. Abre PowerShell/CMD de nuevo
+2. Activa el entorno: venv\Scripts\activate
+3. Ejecuta: dev.bat
+4. ¡Listo!
+
+================================================================================
+  ❗ SOLUCIÓN DE PROBLEMAS COMUNES
+================================================================================
+
+PROBLEMA: "Cannot connect to API"
+----------------------------------
+SOLUCIÓN:
+1. Verifica que la ventana "Backend - FastAPI" esté abierta
+2. Ve a http://localhost:8000 → Deberías ver JSON
+3. Si no funciona, ejecuta manualmente: uvicorn api:app --reload
+
+PROBLEMA: "GOOGLE_API_KEY not found"
+-------------------------------------
+SOLUCIÓN:
+1. Ejecuta de nuevo: set GOOGLE_API_KEY=tu_key
+2. Verifica: echo %GOOGLE_API_KEY%
+3. Reinicia dev.bat
+
+PROBLEMA: "Frontend no se ve"
+------------------------------
+SOLUCIÓN:
+1. Verifica que la ventana "Frontend - HTTP Server" esté abierta
+2. Ve a http://localhost:3000
+3. Presiona Ctrl+Shift+R (fuerza recarga)
+
+PROBLEMA: "uvicorn: command not found"
+---------------------------------------
+SOLUCIÓN:
+1. Verifica que el entorno esté activado: venv\Scripts\activate
+2. Reinstala: pip install -r requirements.txt
+
+================================================================================
+  📚 ARCHIVOS IMPORTANTES
+================================================================================
+
+GUIA_INICIO_RAPIDO.md    → Guía detallada (LÉELO después)
+README_FASTAPI.md        → Documentación completa
+api.py                   → Backend (NO lo toques mucho)
+frontend/                → Interfaz web (personaliza aquí)
+src/                     → Tu lógica (desarrolla aquí)
+dev.bat                  → Script de inicio
+
+================================================================================
+  ✨ SIGUIENTES PASOS
+================================================================================
+
+1. ✅ Sigue las instrucciones de arriba
+2. ✅ Prueba que todo funciona
+3. ✅ Lee GUIA_INICIO_RAPIDO.md
+4. ✅ Experimenta cambiando colores en frontend/css/style.css
+5. ✅ Agrega una nueva funcionalidad en src/recommender.py
+
+================================================================================
+  🎉 ¡ÉXITO!
+================================================================================
+
+Si seguiste todos los pasos, ahora tienes:
+- ✅ Backend profesional con FastAPI
+- ✅ Frontend moderno con HTML/CSS/JS
+- ✅ Hot-reload automático (como Streamlit)
+- ✅ API documentada en Swagger
+- ✅ Listo para producción
+
+¡A desarrollar! 🚀
+
+================================================================================
+  🆘 ¿NECESITAS AYUDA?
+================================================================================
+
+1. Lee GUIA_INICIO_RAPIDO.md (más detalles)
+2. Lee README_FASTAPI.md (documentación completa)
+3. Revisa la consola del navegador (F12)
+4. Revisa logs del backend (ventana CMD)
+5. Contacta a tu profesor/tutor
+
+================================================================================
+
+Creado con ❤️ para tu proyecto de IA
+
