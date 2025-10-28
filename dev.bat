@@ -58,7 +58,7 @@ echo [2/3] Iniciando Backend (FastAPI)...
 echo Backend en: http://localhost:8000
 echo Docs en: http://localhost:8000/docs
 echo.
-start cmd /k "title Backend - FastAPI && uvicorn api:app --reload --host 0.0.0.0 --port 8000"
+start cmd /k "title Backend - FastAPI && uvicorn api:app --host 0.0.0.0 --port 8000"
 
 REM Esperar 3 segundos
 timeout /t 3 /nobreak >nul

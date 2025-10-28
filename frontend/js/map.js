@@ -8,18 +8,96 @@ function initializeMap() {
     // Check if map is already initialized
     if (planoramaMap) return;
     
-    // Default center: Bogotá
-    const bogotaLat = 4.6533;
-    const bogotaLon = -74.0836;
+    // Get map container
+    const mapContainer = document.getElementById('map');
+    if (!mapContainer) {
+        console.error('Map container not found');
+        return;
+    }
     
-    // Create map
-    planoramaMap = L.map('map').setView([bogotaLat, bogotaLon], 12);
+    // Ensure map container is visible before initializing
+    const mapSection = document.getElementById('map-section');
+    if (mapSection && mapSection.style.display === 'none') {
+        console.warn('Map section is hidden, aborting initialization');
+        return;
+    }
     
-    // Add OpenStreetMap tile layer
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19
-    }).addTo(planoramaMap);
+    // Default center: Bogotá (Zona T / Parque 93)
+    const bogotaLat = 4.6738;
+    const bogotaLon = -74.0530;
+    
+    // Create map with better zoom
+    planoramaMap = L.map('map', {
+        center: [bogotaLat, bogotaLon],
+        zoom: 14,  // Closer zoom for better detail
+        minZoom: 10,
+        maxZoom: 19,
+        zoomControl: true,
+        attributionControl: true
+    });
+    
+    // Add multiple tile layers with fallback for reliability
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19,
+        minZoom: 11,
+        tileSize: 256,
+        crossOrigin: true
+    });
+    
+    // Alternative tile server as fallback
+    const esriLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '© Esri',
+        maxZoom: 19,
+        minZoom: 11
+    });
+    
+    // Add the first layer
+    osmLayer.addTo(planoramaMap);
+    
+    // Show loading message
+    const loadingDiv = document.getElementById('map-status');
+    if (loadingDiv) {
+        loadingDiv.innerHTML = '⏳ Cargando mapa...';
+        loadingDiv.className = 'map-status info-message';
+    }
+    
+    // When tiles load, remove loading message
+    planoramaMap.whenReady(() => {
+        console.log('✅ Map tiles loaded');
+        if (loadingDiv) {
+            loadingDiv.innerHTML = '✅ Mapa cargado. Haz clic para marcar tu ubicación.';
+            loadingDiv.className = 'map-status success';
+            setTimeout(() => {
+                loadingDiv.innerHTML = '';
+                loadingDiv.className = 'map-status';
+            }, 2000);
+        }
+    });
+    
+    // If tiles fail to load after 5 seconds, try alternative
+    setTimeout(() => {
+        if (!planoramaMap) return;
+        // Check if tiles loaded
+        const container = planoramaMap.getContainer();
+        const tiles = container.querySelectorAll('.leaflet-tile-loaded');
+        if (tiles.length < 4) {
+            console.log('⚠️  OSM tiles failed, trying alternative');
+            planoramaMap.removeLayer(osmLayer);
+            esriLayer.addTo(planoramaMap);
+        }
+    }, 5000);
+    
+    // Set bounds to Bogotá area (allowing some movement outside)
+    const bogotaBounds = [
+        [4.3, -74.4],  // Southwest
+        [5.0, -73.8]   // Northeast
+    ];
+    
+    // Wait for tiles to load before enabling interaction
+    setTimeout(() => {
+        console.log('🗺️ Map tiles should be loaded');
+    }, 1000);
     
     // Add click handler
     planoramaMap.on('click', onMapClick);
@@ -37,7 +115,7 @@ function onMapClick(e) {
     const lat = e.latlng.lat;
     const lon = e.latlng.lng;
     
-    console.log(`📍 Map clicked: ${lat}, ${lon}`);
+    console.log(`📍 Map clicked at: ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
     
     // Update state
     state.userLat = lat;
@@ -48,6 +126,9 @@ function onMapClick(e) {
     
     // Update status
     updateMapStatus(true);
+    
+    // Visual feedback
+    console.log('✅ Location saved! Coordinates:', lat.toFixed(4), lon.toFixed(4));
     
     // If profile is complete, get new recommendations with location
     if (isProfileComplete()) {

@@ -250,10 +250,29 @@ body {
 
 .map-container {
     width: 100%;
-    height: 300px;
+    height: 450px;
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    background: #e0e0e0;
+    position: relative;
+}
+
+/* Ensure Leaflet tiles load properly */
+.map-container .leaflet-container {
+    height: 100%;
+    width: 100%;
+    background: #e0e0e0;
+    cursor: crosshair;
+}
+
+/* Ensure Leaflet tiles render properly */
+.map-container .leaflet-tile-container {
+    pointer-events: auto;
+}
+
+.map-container .leaflet-tile {
+    pointer-events: auto;
 }
 
 .map-status {

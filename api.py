@@ -119,12 +119,15 @@ _GEMINI_SYSTEM = (
     "- Mapea feria|expo|exposición|taller|workshop|tour|recorrido|experiencia inmersiva a 'experiencia'.\n"
     "- Permite múltiples categorías si el usuario las menciona, pero NUNCA inventes etiquetas fuera de {concierto, teatro, experiencia}.\n"
     "- Si el usuario usa palabras fuera del set (ej. 'música'), normalízalas al set (ej. 'concierto').\n"
-    "- Si el usuario menciona un RANGO (ej. 'la próxima semana', 'entre el 10 y 12'), usa 'fecha_rango' con start/end en YYYY-MM-DD.\n"
+    "- IMPORTANTE: Si el usuario menciona un RANGO RELATIVO (ej. 'próximo mes', 'próxima semana', 'en los próximos días'), calcula las fechas relativas a HOY usando formato YYYY-MM-DD. NUNCA uses fechas del pasado.\n"
+    "- Si el usuario menciona un RANGO ABSOLUTO (ej. 'entre el 10 y 12 de noviembre'), usa 'fecha_rango' con start/end en YYYY-MM-DD.\n"
     "- Si da un día específico (hoy, mañana o una fecha), usa 'fecha' y deja 'fecha_rango' vacío.\n"
     "- 'precio_max_cop' debe ser entero en COP (ej. '120k'→120000; '$150.000'→150000).\n"
     "- 'edad_usuario' solo debe tener un número si el usuario menciona una edad ESPECÍFICA. Si dice 'no importa', 'indiferente', o no menciona edad, déjalo en null.\n"
     "- 'excluir_restriccion_edad': 'si' si el usuario quiere filtrar por edad (menor de edad o va con niños), 'no' o 'indiferente' si no le importa la restricción de edad.\n"
     "- 'parte_del_dia': puede ser LISTA si el usuario menciona múltiples momentos (ej. 'tarde o noche' → ['tarde','noche']). Si menciona uno solo, usa lista con un elemento (ej. ['tarde']). Si dice 'no importa', usa string 'indiferente'.\n"
+    "- 'dist_importa': debe ser EXACTAMENTE 'si' o 'no' (sin tilde). Normaliza 'sí'/'yes'/'s' → 'si'. Normaliza 'no'/'n' → 'no'.\n"
+    "- 'excluir_restriccion_edad': debe ser EXACTAMENTE 'si', 'no' o 'indiferente' (sin tilde). Normaliza 'sí' → 'si'.\n"
     "- 'smalltalk' DEBE ser una frase cálida SIN preguntas (ej.: '¡Listo! Tomo nota.') y SIEMPRE debe venir.\n"
     "- NO incluyas comentarios, ni backticks, ni bloques de código; SOLO JSON estricto.\n"
 )
@@ -513,6 +516,64 @@ async def get_event_detail(event_id: str):
 
 # ==================== HELPER FUNCTIONS ====================
 
+def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
+    """
+    Si fecha_rango (start/end) viene en el pasado, la reubica al FUTURO relativo a hoy:
+      - ~7 días  -> la próxima semana (lunes a lunes)
+      - ~30 días -> el próximo mes (1er día del mes siguiente a 1er día del subsiguiente)
+      - ~365 días-> el próximo año (1 enero a 1 enero siguiente)
+      - otro     -> mismo largo empezando HOY
+    Devuelve un dict {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}.
+    """
+    if not isinstance(dr_dict, dict):
+        return dr_dict
+
+    start = pd.to_datetime(dr_dict.get("start"), errors="coerce")
+    end   = pd.to_datetime(dr_dict.get("end"),   errors="coerce")
+    if pd.isna(start) or pd.isna(end):
+        return dr_dict
+
+    today = pd.Timestamp.now(tz=None).normalize()
+    if end >= today:
+        return {"start": start.date().isoformat(), "end": end.date().isoformat()}
+    dur_days = (end - start).days
+    dur_days = max(1, int(dur_days))
+
+    # Heurísticas por tipo de rango
+    if 26 <= dur_days <= 32:
+        # MES parecido
+        y, m = today.year, today.month
+        # 1er día del próximo mes
+        if m == 12:
+            m2, y2 = 1, y + 1
+        else:
+            m2, y2 = m + 1, y
+        new_start = pd.Timestamp(year=y2, month=m2, day=1)
+        # 1er día del mes subsiguiente
+        if m2 == 12:
+            new_end = pd.Timestamp(year=y2 + 1, month=1, day=1)
+        else:
+            new_end = pd.Timestamp(year=y2, month=m2 + 1, day=1)
+        return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
+    if 6 <= dur_days <= 8:
+        dow = today.weekday()  
+        days_to_next_monday = (7 - dow) % 7
+        next_monday = today + pd.Timedelta(days=days_to_next_monday or 7)
+        new_start = next_monday
+        new_end = new_start + pd.Timedelta(days=7)
+        return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
+    if 360 <= dur_days <= 370:
+        y = today.year + 1
+        new_start = pd.Timestamp(year=y, month=1, day=1)
+        new_end = pd.Timestamp(year=y + 1, month=1, day=1)
+        return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
+    new_start = today
+    new_end = today + pd.Timedelta(days=dur_days)
+    return {"start": new_start.date().isoformat(), "end": new_end.date().isoformat()}
+
 def merge_profiles(base: Dict, delta: Dict) -> Dict:
     """Merge profile updates (same logic as Streamlit version)."""
     p = dict(base or {})
@@ -523,7 +584,8 @@ def merge_profiles(base: Dict, delta: Dict) -> Dict:
 
     dr = delta.get("fecha_rango")
     if isinstance(dr, dict) and (dr.get("start") and dr.get("end")):
-        p["fecha_rango"] = dr
+        # Normalize date range to future if it's in the past
+        p["fecha_rango"] = _normalize_future_like_range_if_past(dr)
         p["fecha"] = ""
     else:
         if not p.get("fecha") and delta.get("fecha"):
@@ -542,8 +604,16 @@ def merge_profiles(base: Dict, delta: Dict) -> Dict:
         except Exception:
             pass
 
-    if not p.get("dist_importa") and delta.get("dist_importa"):
-        p["dist_importa"] = str(delta["dist_importa"]).strip().lower()
+    # cercanía - Siempre actualizar si viene algo nuevo
+    if delta.get("dist_importa"):
+        dist_value = str(delta["dist_importa"]).strip().lower()
+        # Normalizar variantes de sí/no
+        if dist_value in {"si", "sí", "yes", "s"}:
+            p["dist_importa"] = "si"
+        elif dist_value in {"no", "n"}:
+            p["dist_importa"] = "no"
+        elif dist_value:
+            p["dist_importa"] = dist_value
 
     if not p.get("parte_del_dia"):
         delta_pdia = delta.get("parte_del_dia")
@@ -554,14 +624,21 @@ def merge_profiles(base: Dict, delta: Dict) -> Dict:
         elif str(delta_pdia).strip().lower() == "indiferente":
             p["parte_del_dia"] = "indiferente"
 
+    # edad - Actualizar si viene un valor
     if delta.get("edad_usuario") not in (None, "", []):
         try:
             p["edad_usuario"] = int(delta["edad_usuario"])
         except Exception:
             pass
+    
+    # restricción de edad - Siempre actualizar si viene algo nuevo
     delta_excl = str(delta.get("excluir_restriccion_edad") or "").strip().lower()
-    if delta_excl in {"si", "no", "indiferente"} and not p.get("excluir_restriccion_edad"):
-        p["excluir_restriccion_edad"] = delta_excl
+    if delta_excl in {"si", "sí", "no", "indiferente"}:
+        # Normalizar sí con tilde
+        if delta_excl in {"sí"}:
+            p["excluir_restriccion_edad"] = "si"
+        else:
+            p["excluir_restriccion_edad"] = delta_excl
 
     return p
 

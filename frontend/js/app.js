@@ -61,8 +61,7 @@ function initializeApp() {
     // Initialize chat functionality
     initializeChat();
     
-    // Initialize map (if needed)
-    initializeMap();
+    // Map will be initialized lazily when needed (when user selects distance-based recommendations)
     
     // New search button
     document.getElementById('new-search-btn').addEventListener('click', resetSearch);
@@ -92,6 +91,15 @@ function resetSearch() {
     document.getElementById('chat-messages').innerHTML = '';
     document.getElementById('results-container').innerHTML = '<div class="info-message"><p>Aún estoy reuniendo tus preferencias. Sigue respondiendo en el chat.</p></div>';
     document.getElementById('map-section').style.display = 'none';
+    
+    // Reset map
+    if (planoramaMap) {
+        planoramaMap.remove();
+        planoramaMap = null;
+        if (typeof userMarker !== 'undefined') {
+            userMarker = null;
+        }
+    }
     
     // Reset profile display
     updateProfileDisplay();
@@ -195,8 +203,16 @@ function updateMapVisibility() {
     if (needsMap) {
         mapSection.style.display = 'block';
         // Initialize map if not already done
-        if (!window.planoramaMap) {
-            initializeMap();
+        if (!planoramaMap) {
+            // Wait a tick for the browser to recalculate layout before initializing
+            setTimeout(() => {
+                initializeMap();
+            }, 100);
+        } else {
+            // Map already exists, invalidate size to fix dimensions
+            setTimeout(() => {
+                planoramaMap.invalidateSize();
+            }, 100);
         }
     } else {
         mapSection.style.display = 'none';
