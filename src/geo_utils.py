@@ -95,7 +95,7 @@ def _today() -> pd.Timestamp:
 
 def parse_date_pref(pref: str) -> DateRange:
     """
-    Convierte 'hoy' | 'mañana' | 'fin_de_semana' | 'YYYY-MM-DD' en rango [start, end).
+    Convierte 'hoy' | 'mañana' | 'pasado mañana' | 'este sábado' | 'próximo domingo' | 'fin_de_semana' | 'YYYY-MM-DD' en rango [start, end).
     """
     s = (pref or "").strip().lower()
     now = _today()
@@ -109,12 +109,72 @@ def parse_date_pref(pref: str) -> DateRange:
         start = now + pd.Timedelta(days=1)
         end = start + pd.Timedelta(days=1)
         return DateRange(start=start, end=end)
+    
+    # Support for "day after tomorrow" / "pasado mañana"
+    if s in {"pasado mañana", "pasado manana", "day after tomorrow", "after tomorrow"}:
+        start = now + pd.Timedelta(days=2)
+        end = start + pd.Timedelta(days=1)
+        return DateRange(start=start, end=end)
+
+    # Support for day of week: "este sábado", "próximo domingo", etc.
+    # Spanish days
+    dias_semana_es = {
+        "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
+        "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5,
+        "domingo": 6
+    }
+    # English days
+    dias_semana_en = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6
+    }
+    
+    all_days = {**dias_semana_es, **dias_semana_en}
+    
+    # Check for "este [día]" or "este [día]" patterns (sin acentos también)
+    for dia_name, dia_num in all_days.items():
+        # Normalize to check variations
+        dia_variants = [dia_name]
+        if "á" in dia_name:
+            dia_variants.append(dia_name.replace("á", "a"))
+        if "é" in dia_name:
+            dia_variants.append(dia_name.replace("é", "e"))
+        if "ó" in dia_name:
+            dia_variants.append(dia_name.replace("ó", "o"))
+        
+        for variant in dia_variants:
+            # "este sábado", "este sabado"
+            if f"este {variant}" in s:
+                target_dow = dia_num
+                current_dow = now.weekday()
+                days_ahead = (target_dow - current_dow) % 7
+                if days_ahead == 0:
+                    # If it's the same day, use today
+                    start = now
+                else:
+                    start = now + pd.Timedelta(days=days_ahead)
+                end = start + pd.Timedelta(days=1)
+                return DateRange(start=start, end=end)
+            
+            # "próximo sábado", "proximo sabado"
+            if f"proximo {variant}" in s or f"próximo {variant}" in s:
+                target_dow = dia_num
+                current_dow = now.weekday()
+                days_ahead = (target_dow - current_dow) % 7
+                if days_ahead == 0:
+                    # Next week
+                    days_ahead = 7
+                start = now + pd.Timedelta(days=days_ahead)
+                end = start + pd.Timedelta(days=1)
+                return DateRange(start=start, end=end)
 
     if s in {"fin_de_semana", "fin de semana", "finde", "weekend"}:
         # asumimos fin de semana próximo: sábado-domingo
         wd = now.weekday()  # lunes=0 ... domingo=6
         # siguiente sábado
         days_until_sat = (5 - wd) % 7
+        if days_until_sat == 0:
+            days_until_sat = 7
         start = (now + pd.Timedelta(days=days_until_sat)).normalize()
         end = start + pd.Timedelta(days=2)
         return DateRange(start=start, end=end)

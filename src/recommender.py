@@ -55,13 +55,57 @@ def _normtxt(x: str) -> str:
     return s.lower().strip()
 
 
-# Category synonyms for flexible matching
+# Category synonyms for flexible matching - EXPANDED based on CSV data analysis
 _CAT_SYNONYMS = {
-    "concierto": {"concierto", "musica", "musica en vivo", "musical", "show", "festival", "live",
-                  "reggaeton", "trap", "rock", "pop", "salsa", "jazz"},
-    "teatro": {"teatro", "obra", "drama", "comedia", "stand up", "stand-up"},
-    "experiencia": {"experiencia", "feria", "expo", "exposicion", "exposición", "taller", "workshop", "tour", "recorrido"},
+    "concierto": {
+        "concierto", "musica", "musica en vivo", "musical", "show", "festival", "live",
+        "reggaeton", "trap", "rock", "pop", "salsa", "jazz", "hip hop", "rap", "blues",
+        "folk", "clasica", "sinfonica", "orquesta", "electronica", "house", "alternativo",
+        "regional mexicano", "cumbia", "bachata", "metal", "punk", "garage rock",
+        "fado", "chanson", "clasico", "clásico"
+    },
+    "teatro": {
+        "teatro", "obra", "drama", "comedia", "stand up", "stand-up", "standup",
+        "musical familiar", "danza", "ballet", "danza contemporanea", "danza clásica",
+        "circo", "familiar", "infantil", "teatro familiar", "circo danza"
+    },
+    "experiencia": {
+        "experiencia", "feria", "expo", "exposicion", "exposición", "taller", "workshop",
+        "tour", "recorrido", "experiencia inmersiva", "inmersivo", "inmersiva",
+        "evento interactivo", "festival"
+    },
 }
+
+def _normalize_category_from_csv(cat_str: str) -> str:
+    """Normalize category from CSV to canonical categories: concierto, teatro, experiencia."""
+    if not cat_str:
+        return ""
+    cat_lower = _normtxt(cat_str)
+    
+    # Check for music-related
+    music_indicators = ["musica", "música", "concierto", "festival", "show", "live", "clasica", "sinfonica"]
+    for indicator in music_indicators:
+        if indicator in cat_lower:
+            return "concierto"
+    
+    # Check for theater-related
+    theater_indicators = ["teatro", "comedia", "drama", "stand", "musical", "ballet", "danza", "circo", "familiar"]
+    for indicator in theater_indicators:
+        if indicator in cat_lower:
+            return "teatro"
+    
+    # Check for experience-related
+    experience_indicators = ["experiencia", "feria", "expo", "exposición", "taller", "workshop", "tour", "recorrido", "inmersivo"]
+    for indicator in experience_indicators:
+        if indicator in cat_lower:
+            return "experiencia"
+    
+    # Special cases from CSV
+    if "boxing" in cat_lower:
+        # Boxing could be experience or just leave as-is
+        return "experiencia"
+    
+    return cat_lower  # Return as-is if can't normalize
 
 
 def _expand_cats(cats: List[str]) -> set:
@@ -144,17 +188,43 @@ def compute_recommendations(
             dr = parse_date_pref(pref_fecha)
             df_filt = df_filt[df_filt["date_start_parsed"].apply(lambda ts: _in_date_range(ts, dr.start, dr.end))]
     
-    # Categories (flexible matching)
+    # Categories (flexible matching) - IMPROVED with better normalization
     cats = [c.lower() for c in (perfil.get("categorias") or [])]
     if cats and "category" in df_filt.columns:
         if "text_blob_norm" not in df_filt.columns:
             df_filt["text_blob_norm"] = df_filt["text_blob"].apply(_normtxt)
+        
+        # Normalize categories from CSV to canonical ones
+        if "category_normalized" not in df_filt.columns:
+            df_filt["category_normalized"] = df_filt["category"].apply(_normalize_category_from_csv)
+        
         wanted = _expand_cats(cats)
         
         def _cat_ok(row) -> bool:
-            cat_ok  = _normtxt(row.get("category", "")) in wanted
+            # Check normalized category first
+            cat_norm = _normtxt(row.get("category_normalized", ""))
+            if cat_norm in wanted or cat_norm in cats:
+                return True
+            # Check original category (with flexible matching for consolidated categories)
+            orig_cat = _normtxt(row.get("category", ""))
+            
+            # Direct match
+            if orig_cat in wanted:
+                return True
+            
+            # Check if any wanted category matches the prefix (for consolidated categories)
+            # e.g., if user selected "teatro" and event has "teatro/danza", it should match
+            for wanted_cat in wanted:
+                # If the event category starts with wanted_cat + "/", it's a match
+                if orig_cat.startswith(wanted_cat + "/"):
+                    return True
+                # If wanted_cat starts with orig_cat + "/" (less common but possible)
+                if "/" in wanted_cat and orig_cat == wanted_cat.split("/")[0]:
+                    return True
+            
+            # Check in text blob
             blob_ok = any(w in row.get("text_blob_norm", "") for w in wanted)
-            return cat_ok or blob_ok
+            return blob_ok
         
         df_filt = df_filt[df_filt.apply(_cat_ok, axis=1)]
     
@@ -191,14 +261,28 @@ def compute_recommendations(
     
     # 2) SCORING
     
-    # Content similarity (TF-IDF + cosine)
+    # Content similarity (TF-IDF + cosine) - IMPROVED to use keywords
+    # Build query text from categories + keywords for better semantic matching
+    query_parts = []
     if cats:
-        qv = vectorizer.transform([" ".join(cats)])
+        query_parts.extend(cats)
+    
+    # Add keywords from user preferences (artists, genres, themes, etc.)
+    keywords = perfil.get("keywords", [])
+    if keywords:
+        # Keywords are already lowercased in merge_profiles
+        query_parts.extend([str(kw).strip() for kw in keywords if str(kw).strip()])
+    
+    if query_parts:
+        # Join all query parts for TF-IDF search
+        query_text = " ".join(query_parts)
+        qv = vectorizer.transform([query_text])
         sims_full = cosine_similarity(qv, Xmatrix).ravel()
         sim_map = {id_: float(s) for id_, s in zip(IDS, sims_full)}
         df_filt["sim_contenido"] = df_filt["uid"].map(sim_map).fillna(0.0)
     else:
-        df_filt["sim_contenido"] = 0.0
+        # If no categories or keywords, use a very basic similarity
+        df_filt["sim_contenido"] = 0.3  # Small default similarity instead of 0
     
     # Price score
     def price_score(row) -> float:

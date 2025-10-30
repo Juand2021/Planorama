@@ -8,6 +8,7 @@ Uses the same logic from src/ modules.
 import os
 import sys
 import json
+import warnings
 from typing import Optional, Dict, List
 from datetime import datetime
 
@@ -17,11 +18,15 @@ SRC_DIR = os.path.join(BASE_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
+# Suppress pandas date parsing warnings (we handle errors with errors="coerce")
+warnings.filterwarnings('ignore', category=UserWarning, message='.*Could not infer format.*')
+
 # FastAPI imports
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from typing import Optional
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -29,7 +34,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 # Local modules
 from geo_utils import parse_date_pref
-from llm_interviewer import process_turn
+# Removed dependency on llm_interviewer - now 100% Gemini-driven
 from recommender import compute_recommendations, _normtxt, _expand_cats
 
 # Initialize FastAPI
@@ -47,6 +52,9 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://localhost:5500",  # VS Code Live Server
         "http://127.0.0.1:5500",
+        "http://localhost:8000",  # FastAPI puede servir el frontend también
+        "http://127.0.0.1:8000",
+        "null",  # Para file:// protocol (desarrollo local)
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -57,7 +65,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
 # ==================== GEMINI SETUP ====================
-GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_OK = False
 GEMINI_MODEL = None
 
@@ -97,39 +105,98 @@ def _init_gemini():
 
 _init_gemini()
 
-# Gemini prompt (same as Streamlit version)
+# Gemini prompt - Fully AI-driven conversational flow
 _GEMINI_SYSTEM = (
-    "Eres un normalizador de preferencias para un recomendador de eventos en Bogotá. "
-    "Debes responder SOLO con JSON válido (sin texto fuera del JSON) y con EXACTAMENTE estas claves:\n"
+    "Eres Planorama, un asistente conversacional inteligente para recomendar eventos en Bogotá. "
+    "Tu tarea es mantener una conversación natural con el usuario, entender sus preferencias, y determinar cuándo tienes suficiente información para hacer recomendaciones.\n\n"
+    
+    "FORMATO DE RESPUESTA (OBLIGATORIO - SOLO JSON):\n"
     "{\n"
-    '  "smalltalk": "texto breve, cálido y SIN preguntas",\n'
-    '  "fecha": "hoy|mañana|fin_de_semana|YYYY-MM-DD|",\n'
-    '  "fecha_rango": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},\n'
-    '  "categorias": ["concierto|teatro|experiencia", ...],\n'
-    '  "es_gratis": "gratis|pago|indiferente|",\n'
-    '  "precio_max_cop": 120000,\n'
-    '  "dist_importa": "si|no|",\n'
-    '  "parte_del_dia": ["mañana|tarde|noche", ...] or "indiferente",\n'
-    '  "edad_usuario": null,\n'
-    '  "excluir_restriccion_edad": "si|no|indiferente"\n'
-    "}\n"
-    "Reglas de normalización (OBLIGATORIAS):\n"
-    "- Mapea TODO lo relacionado con música en vivo a 'concierto': musica|música|musica en vivo|festival|show|live|rock|pop|salsa|jazz|reggaeton|trap → concierto.\n"
-    "- Mapea stand up|stand-up|comedia a 'teatro'.\n"
-    "- Mapea feria|expo|exposición|taller|workshop|tour|recorrido|experiencia inmersiva a 'experiencia'.\n"
-    "- Permite múltiples categorías si el usuario las menciona, pero NUNCA inventes etiquetas fuera de {concierto, teatro, experiencia}.\n"
-    "- Si el usuario usa palabras fuera del set (ej. 'música'), normalízalas al set (ej. 'concierto').\n"
-    "- IMPORTANTE: Si el usuario menciona un RANGO RELATIVO (ej. 'próximo mes', 'próxima semana', 'en los próximos días'), calcula las fechas relativas a HOY usando formato YYYY-MM-DD. NUNCA uses fechas del pasado.\n"
-    "- Si el usuario menciona un RANGO ABSOLUTO (ej. 'entre el 10 y 12 de noviembre'), usa 'fecha_rango' con start/end en YYYY-MM-DD.\n"
-    "- Si da un día específico (hoy, mañana o una fecha), usa 'fecha' y deja 'fecha_rango' vacío.\n"
-    "- 'precio_max_cop' debe ser entero en COP (ej. '120k'→120000; '$150.000'→150000).\n"
-    "- 'edad_usuario' solo debe tener un número si el usuario menciona una edad ESPECÍFICA. Si dice 'no importa', 'indiferente', o no menciona edad, déjalo en null.\n"
-    "- 'excluir_restriccion_edad': 'si' si el usuario quiere filtrar por edad (menor de edad o va con niños), 'no' o 'indiferente' si no le importa la restricción de edad.\n"
-    "- 'parte_del_dia': puede ser LISTA si el usuario menciona múltiples momentos (ej. 'tarde o noche' → ['tarde','noche']). Si menciona uno solo, usa lista con un elemento (ej. ['tarde']). Si dice 'no importa', usa string 'indiferente'.\n"
-    "- 'dist_importa': debe ser EXACTAMENTE 'si' o 'no' (sin tilde). Normaliza 'sí'/'yes'/'s' → 'si'. Normaliza 'no'/'n' → 'no'.\n"
-    "- 'excluir_restriccion_edad': debe ser EXACTAMENTE 'si', 'no' o 'indiferente' (sin tilde). Normaliza 'sí' → 'si'.\n"
-    "- 'smalltalk' DEBE ser una frase cálida SIN preguntas (ej.: '¡Listo! Tomo nota.') y SIEMPRE debe venir.\n"
-    "- NO incluyas comentarios, ni backticks, ni bloques de código; SOLO JSON estricto.\n"
+    '  "smalltalk": "respuesta breve y cálida al mensaje del usuario (ej: \'¡Perfecto!\', \'Entendido\', \'Genial\')",\n'
+    '  "next_question": "pregunta natural sobre lo que falta O string vacío \"\" si ya tienes suficiente información",\n'
+    '  "show_categories": true/false,  // true si el usuario no sabe qué categoría quiere y debe ver la lista\n'
+    '  "profile_complete": true/false,  // true solo si tienes: categoría + fecha + gratis/pago + presupuesto (si es pago) + cercanía + edad\n'
+    '  "fecha": "hoy|mañana|fin_de_semana|YYYY-MM-DD|" o string vacío "",\n'
+    '  "fecha_rango": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} o null,\n'
+    '  "categorias": ["concierto|teatro|experiencia", ...] o [],\n'
+    '  "keywords": ["palabra1", "palabra2", ...] o [],  // artistas, géneros, temas específicos\n'
+    '  "es_gratis": "gratis|pago|indiferente|" o string vacío "",\n'
+    '  "precio_max_cop": 120000 o null,  // entero en COP\n'
+    '  "dist_importa": "si|no|" o string vacío "",\n'
+    '  "parte_del_dia": ["mañana|tarde|noche", ...] o "indiferente" o string vacío "",\n'
+    '  "edad_usuario": null o número entero,\n'
+    '  "excluir_restriccion_edad": "si|no|indiferente|" o string vacío ""\n'
+    "}\n\n"
+    
+    "REGLAS CRÍTICAS:\n\n"
+    
+    "1. CONVERSACIÓN NATURAL:\n"
+    "- Analiza qué información YA TIENES en el perfil actual.\n"
+    "- Identifica qué falta para poder recomendar (categoría, fecha, presupuesto, etc.).\n"
+    "- Haz PREGUNTAS CONVERSACIONALES Y NATURALES (no robóticas). Ejemplos:\n"
+    "   ❌ MAL: '¿Para cuándo te gustaría el plan? Responde: hoy, mañana o fecha YYYY-MM-DD'\n"
+    "   ✅ BIEN: '¿Para cuándo estarías interesado en ir?' o '¿Tienes alguna fecha en mente?'\n"
+    "- Si el usuario NO MENCIONA una categoría específica en su mensaje:\n"
+    "   ✅ DEBES mencionar las categorías disponibles DIRECTAMENTE en 'next_question' o 'smalltalk'.\n"
+    "   ✅ Dí algo como: '¡Perfecto! Las categorías disponibles son: [lista de categorías]. Puedes elegir una o más. ¿Cuál te interesa?'\n"
+    "   ✅ SIEMPRE pon 'show_categories': true para que el sistema muestre los botones también.\n"
+    "   ✅ NO solo preguntes '¿Qué tipo de plan te gustaría?' - MENCIONA las categorías específicas en tu respuesta.\n"
+    "- Si el usuario dice explícitamente que no sabe (dice 'no sé', 'cualquiera', 'me da igual', 'muéstrame opciones', 'qué hay disponible'):\n"
+    "   ✅ TAMBIÉN pon 'show_categories': true y muestra las categorías directamente.\n"
+    "- Si el usuario da información incompleta, haz follow-up. Ej: si dice 'el próximo mes' pero no año, calcula la fecha.\n"
+    "- Si ya tienes suficiente información, pon profile_complete=true y next_question=\"\".\n\n"
+    
+    "2. PERFIL COMPLETO (profile_complete=true) cuando tengas:\n"
+    "   ✅ categorias: al menos una categoría\n"
+    "   ✅ fecha o fecha_rango: fecha específica o rango\n"
+    "   ✅ es_gratis: 'gratis', 'pago' o 'indiferente'\n"
+    "   ✅ precio_max_cop: número si es_gratis='pago', sino puede ser null\n"
+    "   ✅ dist_importa: 'si' o 'no'\n"
+    "   ✅ (edad_usuario O excluir_restriccion_edad): al menos uno de estos\n"
+    "   ✅ parte_del_dia: lista, 'indiferente' o puede ser vacío (opcional)\n\n"
+    
+    "3. NORMALIZACIÓN DE CAMPOS:\n"
+    "- CATEGORÍAS: musica|música|concierto|festival|show|live|rock|pop|salsa|jazz|reggaeton|trap → 'concierto'\n"
+    "- CATEGORÍAS: teatro|comedia|stand up|stand-up|humor|danza|ballet|circo|musical familiar → 'teatro'\n"
+    "- CATEGORÍAS: feria|expo|exposición|taller|workshop|tour|experiencia inmersiva → 'experiencia'\n"
+    "- FECHAS: 'mañana' o 'tomorrow' → calcula la fecha real de mañana en formato YYYY-MM-DD y usa fecha_rango.\n"
+    "- FECHAS: 'pasado mañana' o 'day after tomorrow' → calcula la fecha real de pasado mañana en formato YYYY-MM-DD y usa fecha_rango.\n"
+    "- FECHAS: 'hoy' o 'today' → calcula la fecha de hoy en formato YYYY-MM-DD y usa fecha_rango.\n"
+    "- FECHAS: 'este sábado', 'este domingo', etc. → calcula la fecha real de ese día de la semana (si es hoy usa hoy, si es futuro usa esa fecha, si ya pasó esta semana usa la siguiente semana).\n"
+    "- FECHAS: 'próximo sábado', 'proximo domingo', etc. → calcula la fecha del siguiente [día] de la semana.\n"
+    "- FECHAS: 'próximo mes' → calcula fecha_rango desde HOY. 'próxima semana' → calcula fecha_rango 7 días desde HOY. NUNCA uses fechas pasadas.\n"
+    "- IMPORTANTE: Cuando el usuario dice 'mañana', 'pasado mañana', 'este sábado', etc., SIEMPRE convierte a fecha_rango con la fecha real en formato YYYY-MM-DD, NO dejes strings relativos en el campo fecha.\n"
+    "- PRECIO: '50 mil'→50000, '120k'→120000, '$150.000'→150000\n"
+    "- KEYWORDS: Extrae términos específicos (géneros, artistas, temas) para búsqueda semántica mejorada\n\n"
+    
+    "4. CONTEXTO:\n"
+    "- Si el perfil actual ya tiene información, NO la sobrescribas a menos que el usuario la cambie explícitamente.\n"
+    "- Completa SOLO los campos que faltan.\n"
+    "- Mantén un tono amigable y conversacional en smalltalk.\n\n"
+    
+    "EJEMPLO 1 - Usuario nuevo dice: 'hola, quiero ir a un concierto'\n"
+    '{"smalltalk":"¡Hola! Me encanta ayudarte a encontrar el plan perfecto.","next_question":"¿Para cuándo te gustaría ir? ¿Esta semana, el próximo fin de semana, o tienes alguna fecha en mente?","show_categories":false,"profile_complete":false,"categorias":["concierto"],"keywords":["concierto"],"fecha":"","fecha_rango":null,"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n\n'
+    
+    "EJEMPLO 1b - Usuario dice: 'hola, me gustaría hacer un plan el día de mañana' (NO menciona categoría)\n"
+    '{"smalltalk":"¡Hola! Perfecto, tienes fecha. Las categorías disponibles son: Música / Clásica, Teatro / Comedia, Experiencia, etc. Puedes elegir una o más. ¿Cuál te interesa?","next_question":"","show_categories":true,"profile_complete":false,"categorias":[],"keywords":[],"fecha":"","fecha_rango":{"start":"2025-01-XX","end":"2025-01-XX"},"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n'
+    "NOTA: Como NO mencionó categoría, DEBES mencionar las categorías disponibles DIRECTAMENTE en smalltalk o next_question. Menciona al menos las primeras 5-10 categorías de la lista. show_categories=true para mostrar botones.\n\n"
+    
+    "EJEMPLO 2 - Usuario dice: 'mañana' (solo fecha, sin categoría)\n"
+    '{"smalltalk":"¡Perfecto!","next_question":"Elige una categoría:","show_categories":true,"profile_complete":false,"categorias":[],"keywords":[],"fecha":"","fecha_rango":{"start":"2025-01-XX","end":"2025-01-XX"},"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n'
+    "NOTA: Como NO mencionó categoría, show_categories=true. NO preguntes textualmente qué tipo quiere, solo muestra las categorías.\n\n"
+    
+    "EJEMPLO 2b - Usuario dice: 'este sábado' (solo fecha, sin categoría - si hoy es miércoles 2025-01-15)\n"
+    '{"smalltalk":"¡Perfecto!","next_question":"Elige una categoría:","show_categories":true,"profile_complete":false,"categorias":[],"keywords":[],"fecha":"","fecha_rango":{"start":"2025-01-18","end":"2025-01-19"},"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n'
+    "NOTA: Como NO mencionó categoría, show_categories=true. 'este sábado' significa el sábado más cercano. Si hoy es miércoles, el sábado de esta semana es 2025-01-18. NO preguntes qué tipo quiere, solo muestra las categorías.\n\n"
+    
+    "EJEMPLO 3 - Usuario dice: 'el próximo mes y tengo 50 mil pesos de presupuesto' (NO menciona categoría)\n"
+    '{"smalltalk":"¡Perfecto! Ya tengo tu presupuesto.","next_question":"Elige una categoría:","show_categories":true,"profile_complete":false,"categorias":[],"keywords":[],"fecha":"","fecha_rango":{"start":"2025-02-01","end":"2025-03-01"},"precio_max_cop":50000,"es_gratis":"pago","dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n'
+    "NOTA: Como NO mencionó categoría, show_categories=true. Primero muestra las categorías, luego continuará preguntando sobre la distancia.\n\n"
+    
+    "EJEMPLO 4 - Perfil completo\n"
+    '{"smalltalk":"¡Excelente! Ya tengo toda la información que necesito.","next_question":"","profile_complete":true,"categorias":["teatro"],"keywords":["comedia"],"fecha_rango":{"start":"2025-02-01","end":"2025-03-01"},"es_gratis":"pago","precio_max_cop":50000,"dist_importa":"no","parte_del_dia":"indiferente","edad_usuario":null,"excluir_restriccion_edad":"no"}\n\n'
+    
+    "IMPORTANTE: Responde SOLO con JSON válido, sin texto adicional, sin backticks, sin comentarios."
 )
 
 def _strip_to_json(text: str) -> str:
@@ -156,11 +223,33 @@ def _ensure_schema(d: dict) -> dict:
     else:
         pdia_normalized = ""
     
+    # Handle keywords - ensure it's a list
+    keywords = d.get("keywords", [])
+    if not isinstance(keywords, list):
+        keywords = []
+    
+    # Handle profile_complete, next_question, and show_categories
+    profile_complete = d.get("profile_complete", False)
+    if not isinstance(profile_complete, bool):
+        profile_complete = False
+    
+    next_question = d.get("next_question", "")
+    if not isinstance(next_question, str):
+        next_question = ""
+    
+    show_categories = d.get("show_categories", False)
+    if not isinstance(show_categories, bool):
+        show_categories = False
+    
     return {
         "smalltalk": d.get("smalltalk", ""),
+        "next_question": next_question,
+        "show_categories": show_categories,
+        "profile_complete": profile_complete,
         "fecha": d.get("fecha", ""),
         "fecha_rango": d.get("fecha_rango") if isinstance(d.get("fecha_rango"), dict) else None,
         "categorias": d.get("categorias", []) or [],
+        "keywords": keywords,
         "es_gratis": d.get("es_gratis", ""),
         "precio_max_cop": d.get("precio_max_cop", None),
         "dist_importa": d.get("dist_importa", ""),
@@ -175,27 +264,62 @@ def gemini_normalize(user_text: str, current_profile: Dict) -> dict:
         return _ensure_schema({"smalltalk": "¡Listo! Tomo nota. 😉"})
 
     try:
+        # Ensure current_profile has keywords
+        safe_profile = dict(current_profile or {})
+        if "keywords" not in safe_profile:
+            safe_profile["keywords"] = []
+        
         perfil_json = json.dumps({
-            k: v for k, v in (current_profile or {}).items()
-            if k in {"fecha","fecha_rango","categorias","es_gratis","precio_max_cop","dist_importa","parte_del_dia","edad_usuario","excluir_restriccion_edad"}
+            k: v for k, v in safe_profile.items()
+            if k in {"fecha","fecha_rango","categorias","keywords","es_gratis","precio_max_cop","dist_importa","parte_del_dia","edad_usuario","excluir_restriccion_edad"}
         }, ensure_ascii=False)
+
+        # Build categories list text for prompt
+        categories_text = ", ".join(AVAILABLE_CATEGORIES[:20])  # Show top 20
+        if len(AVAILABLE_CATEGORIES) > 20:
+            categories_text += f", y {len(AVAILABLE_CATEGORIES) - 20} más"
 
         prompt = (
             _GEMINI_SYSTEM
-            + "\n\nContexto_perfil_actual_JSON:\n" + perfil_json
-            + "\n\nNuevo_mensaje_usuario:\n" + (user_text or "").strip()
-            + "\n\nTarea:\n"
-              "- Interpreta el 'Nuevo_mensaje_usuario' y completa SOLO los campos que estén vacíos en 'Contexto_perfil_actual_JSON'. "
-              "Si el usuario cambia explícitamente una preferencia, actualízala. Responde SOLO con el JSON del contrato."
+            + f"\n\nCATEGORÍAS DISPONIBLES EN LA BASE DE DATOS:\n{categories_text}\n"
+              "IMPORTANTE: El usuario puede elegir UNA O MÁS categorías de esta lista.\n"
+              "Cuando el usuario NO mencione una categoría específica, debes mencionar las categorías disponibles directamente en tu respuesta.\n\n"
+            + "\n\nPERFIL_ACTUAL (información que ya tienes):\n" + perfil_json
+            + "\n\nMENSAJE_DEL_USUARIO:\n" + (user_text or "").strip()
+            + "\n\nINSTRUCCIONES:\n"
+              "1. Analiza el mensaje del usuario y actualiza el perfil con la nueva información.\n"
+              "2. Mantén toda la información previa que no sea contradicha.\n"
+              "3. Determina qué información aún falta para hacer una recomendación.\n"
+              "4. **CRÍTICO**: Si NO hay categoría en categorias[] (lista vacía), DEBES:\n"
+              "   a) Mencionar las categorías disponibles en 'next_question' o 'smalltalk'.\n"
+              "   b) Decirle al usuario que puede elegir UNA o MÁS categorías.\n"
+              "   c) Pon show_categories=true para que el sistema muestre los botones.\n"
+              "   Ejemplo: '¡Perfecto! Las categorías disponibles son: [lista de categorías]. Puedes elegir una o más. ¿Cuál te interesa?'\n"
+              "5. Si falta información, genera una pregunta natural en 'next_question' y pon profile_complete=false.\n"
+              "6. Si ya tienes suficiente información (categoría + fecha + precio + cercanía + edad), pon profile_complete=true y next_question=\"\".\n"
+              "7. Responde SOLO con el JSON del contrato, sin texto adicional.\n"
         )
 
         generation_config = {"temperature": 0.2}
         resp = GEMINI_MODEL.generate_content(prompt, generation_config=generation_config)
         raw = getattr(resp, "text", "") or ""
-        data = json.loads(_strip_to_json(raw))
-        return _ensure_schema(data)
+        
+        # Try to parse JSON
+        json_str = _strip_to_json(raw)
+        data = json.loads(json_str)
+        
+        # Ensure schema is correct
+        result = _ensure_schema(data)
+        return result
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error in gemini_normalize: {e}")
+        print(f"Raw response: {raw[:500] if 'raw' in locals() else 'N/A'}")
+        return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊"})
     except Exception as e:
-        print(f"Error in gemini_normalize: {e}")
+        import traceback
+        print(f"❌ Error in gemini_normalize: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
         return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊"})
 
 # ==================== DATA LOADING ====================
@@ -232,8 +356,12 @@ def load_events_from_csv(path: str) -> pd.DataFrame:
         df[c] = df[c].astype(str).str.strip()
 
     df["uid"] = df["event_id"].where(df["event_id"].str.strip() != "", other=df.index.astype(str))
-    df["date_start_parsed"] = pd.to_datetime(df["date_start"], errors="coerce", dayfirst=True)
-    df["date_end_parsed"]   = pd.to_datetime(df["date_end"],   errors="coerce", dayfirst=True)
+    
+    # Parse dates - suppress warnings since format may vary and we handle errors gracefully
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*Could not infer format.*')
+        df["date_start_parsed"] = pd.to_datetime(df["date_start"], errors="coerce", dayfirst=True)
+        df["date_end_parsed"]   = pd.to_datetime(df["date_end"],   errors="coerce", dayfirst=True)
 
     def _to_hour(x) -> float:
         try:
@@ -320,6 +448,49 @@ df_events = load_events_from_csv(DATA_PATH)
 vectorizer, Xmatrix, IDS = build_tfidf(df_events["text_blob"], df_events["uid"].tolist())
 print(f"✅ Loaded {len(df_events)} events")
 
+# Extract available categories from future events
+def get_available_categories(df: pd.DataFrame) -> List[str]:
+    """
+    Get list of unique categories from future events.
+    Consolidates categories that share the same prefix before "/" (e.g., "Teatro/Danza" and "Teatro/Familia" -> "Teatro").
+    """
+    future_events = df[df["is_future"] == True]
+    category_counts = future_events["category"].value_counts().to_dict()
+    
+    # Consolidate categories: group by prefix before "/"
+    consolidated = {}
+    for category, count in category_counts.items():
+        if not category or str(category).strip() == "" or str(category).lower() in {"nan", "none", ""}:
+            continue
+        
+        category_str = str(category).strip()
+        
+        # Extract base category (before "/") or use full category if no "/"
+        if "/" in category_str:
+            base_category = category_str.split("/")[0].strip()
+        else:
+            base_category = category_str
+        
+        # Normalize to title case to avoid duplicates like "Música" and "musica"
+        base_category = base_category.capitalize()
+        
+        # Sum counts for consolidated categories
+        if base_category in consolidated:
+            consolidated[base_category] += count
+        else:
+            consolidated[base_category] = count
+    
+    # Sort by count (most popular first)
+    valid_categories_sorted = sorted(
+        consolidated.keys(), 
+        key=lambda x: consolidated.get(x, 0), 
+        reverse=True
+    )
+    return valid_categories_sorted
+
+AVAILABLE_CATEGORIES = get_available_categories(df_events)
+print(f"📋 Available categories ({len(AVAILABLE_CATEGORIES)}): {', '.join(AVAILABLE_CATEGORIES[:10])}...")
+
 # ==================== PYDANTIC MODELS ====================
 class ChatMessage(BaseModel):
     text: str
@@ -329,6 +500,7 @@ class RecommendRequest(BaseModel):
     profile: Dict
     user_lat: Optional[float] = None
     user_lon: Optional[float] = None
+    skip_top: Optional[bool] = False  # For alternative recommendations
 
 class LocationUpdate(BaseModel):
     lat: float
@@ -336,16 +508,33 @@ class LocationUpdate(BaseModel):
 
 # ==================== ENDPOINTS ====================
 
-@app.get("/")
-async def root():
-    """Health check endpoint."""
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint - returns API status and Gemini connection state."""
     return {
         "status": "ok",
         "service": "Planorama API",
         "version": "1.0.0",
         "gemini_connected": GEMINI_OK,
-        "events_loaded": len(df_events)
+        "events_loaded": len(df_events),
+        "gemini_model": GEMINI_MODEL_NAME if GEMINI_OK else None
     }
+
+@app.get("/")
+async def root(accept: Optional[str] = Header(None)):
+    """Serve frontend HTML or return health check as JSON based on Accept header."""
+    # If Accept header requests JSON, return health check
+    if accept and "application/json" in accept:
+        return await health_check()
+    
+    # Otherwise serve the frontend HTML
+    index_path = os.path.join(BASE_DIR, "frontend", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    
+    # Fallback to health check JSON if HTML not found
+    return await health_check()
 
 @app.post("/api/chat")
 async def chat_endpoint(message: ChatMessage):
@@ -367,47 +556,117 @@ async def chat_endpoint(message: ChatMessage):
         user_text = message.text.strip()
         current_profile = message.profile or {}
         
-        # Normalize with Gemini
-        delta = gemini_normalize(user_text, current_profile)
+        # Normalize with Gemini - now includes conversational flow
+        gemini_response = gemini_normalize(user_text, current_profile)
         
-        # Merge profiles
-        profile = merge_profiles(current_profile, delta)
+        # Merge profiles (Gemini already updated the profile fields)
+        profile = merge_profiles(current_profile, gemini_response)
         
-        # Check if profile is complete
-        reply_text, _, done = process_turn("", profile)
+        # Ensure relative dates are converted to actual date ranges
+        profile = _convert_relative_dates_to_ranges(profile)
         
-        smalltalk = profile.get("smalltalk", "").strip()
+        # Gemini tells us if profile is complete and what to ask next
+        profile_complete = gemini_response.get("profile_complete", False)
+        next_question = gemini_response.get("next_question", "").strip()
+        smalltalk = gemini_response.get("smalltalk", "").strip()
+        show_categories = gemini_response.get("show_categories", False)
         
-        if done:
-            bot_reply = smalltalk or "¡Perfecto! Con esa info ya puedo recomendarte."
+        # FALLBACK: Si no hay categoría y el perfil no está completo, mostrar categorías automáticamente
+        categorias = profile.get("categorias", [])
+        # Normalize categorias - ensure it's a list and check if it's truly empty
+        if categorias is None:
+            categorias = []
+        if not isinstance(categorias, list):
+            categorias = []
+        categorias = [c for c in categorias if c and str(c).strip()]  # Filter out empty strings
+        
+        if not profile_complete:
+            if len(categorias) == 0:
+                show_categories = True
+                print(f"🔍 Auto-activating show_categories: no categories found in profile (len={len(profile.get('categorias', []))})")
+        
+        # Update profile with normalized categorias
+        profile["categorias"] = categorias
+        
+        print(f"📊 Chat response - show_categories: {show_categories}, categorias: {categorias}, profile_complete: {profile_complete}")
+        
+        # Build bot reply: smalltalk + next question
+        # Si vamos a mostrar categorías, no usar next_question que pregunte sobre categorías
+        if show_categories:
+            # Si vamos a mostrar categorías, solo usar smalltalk o un mensaje breve
+            if smalltalk:
+                bot_reply = smalltalk
+            else:
+                bot_reply = "Te muestro las opciones disponibles:"
+        elif profile_complete:
+            # Emit required confirmation phrase when we have all info
+            bot_reply = "perfecto ya tengo la informacion requerida y el plan que recomiento es el siguiente"
         else:
-            ask = reply_text.strip()
-            bot_reply = f"{smalltalk} {ask}" if smalltalk else ask
+            # Combine smalltalk with question naturally
+            if smalltalk and next_question:
+                bot_reply = f"{smalltalk} {next_question}"
+            elif next_question:
+                bot_reply = next_question
+            else:
+                bot_reply = smalltalk or "Entiendo, continuemos."
+        
+        # Ensure profile has all required fields with defaults
+        if "keywords" not in profile:
+            profile["keywords"] = []
         
         return {
             "reply": bot_reply,
             "profile": profile,
-            "done": done,
-            "smalltalk": smalltalk
+            "done": profile_complete,
+            "show_categories": show_categories,
+            # Frontend hint: when profile is complete, show only the top recommendation card
+            "trigger_top_recommendation": True if profile_complete else False,
+            "hide_results_list": True if profile_complete else False
         }
     
     except Exception as e:
-        print(f"Error in chat_endpoint: {e}")
+        import traceback
+        print(f"❌ Error in chat_endpoint: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def calculate_ai_probability(score_final: float, max_score: float, min_score: float) -> float:
+    """
+    Convert score_final to a probability percentage (0-100).
+    Uses min-max normalization and applies a sigmoid-like curve for better interpretation.
+    """
+    if max_score == min_score:
+        return 85.0  # Default high probability if all scores are the same
+    
+    # Normalize to 0-1 range
+    normalized = (score_final - min_score) / (max_score - min_score)
+    
+    # Apply sigmoid-like transformation for more interpretable percentages
+    # This gives better spread: scores near max get 85-95%, medium scores get 60-80%
+    # Formula: percentage = 60 + (normalized * 35) - ensures range of roughly 60-95%
+    percentage = 60.0 + (normalized * 35.0)
+    
+    # Clamp to reasonable range
+    percentage = max(50.0, min(98.0, percentage))
+    
+    return round(percentage, 1)
 
 @app.post("/api/recommend")
 async def recommend_endpoint(request: RecommendRequest):
     """
     Get event recommendations based on user profile.
+    When there are many options, uses AI (TF-IDF + cosine similarity) to identify the top recommendation.
     
     Args:
         request: RecommendRequest with profile and optional location
     
     Returns:
         {
-            "events": [...],        # List of recommended events
-            "count": int,          # Number of results
-            "profile_summary": {}  # Profile used for recommendations
+            "events": [...],              # List of recommended events
+            "count": int,                 # Number of results
+            "profile_summary": {},        # Profile used for recommendations
+            "top_recommendation": {...},  # Top AI recommendation (if count > 5)
+            "ai_enabled": bool            # Whether AI recommendation was used
         }
     """
     try:
@@ -430,12 +689,17 @@ async def recommend_endpoint(request: RecommendRequest):
             return {
                 "events": [],
                 "count": 0,
-                "profile_summary": profile
+                "profile_summary": profile,
+                "top_recommendation": None,
+                "ai_enabled": False
             }
         
         # Convert to JSON-serializable format
         events = []
+        scores = []
         for _, row in df_rank.iterrows():
+            score_final = float(row.get("score_final", 0))
+            scores.append(score_final)
             event = {
                 "uid": row.get("uid", ""),
                 "title": row.get("title", ""),
@@ -457,19 +721,199 @@ async def recommend_endpoint(request: RecommendRequest):
                 "image_url": row.get("image_url", ""),
                 "source_url": row.get("source_url", ""),
                 "organizer_url": row.get("organizer_url", ""),
-                "score_final": float(row.get("score_final", 0)),
+                "score_final": score_final,
                 "dist_km": float(row.get("dist_km")) if pd.notna(row.get("dist_km")) else None,
             }
             events.append(event)
         
+        # AI Recommendation System: Always compute a single top recommendation
+        # This uses TF-IDF + cosine similarity that was already computed in compute_recommendations
+        top_recommendation = None
+        ai_enabled = False
+
+        # Get the top event (highest score_final) if available
+        if len(events) >= 1:
+            top_event = events[0]
+
+            # Calculate probability percentage
+            max_score = max(scores) if scores else 1.0
+            min_score = min(scores) if scores else 0.0
+            probability = calculate_ai_probability(top_event["score_final"], max_score, min_score)
+
+            # Add probability to top event and craft explanation
+            top_event["ai_probability"] = probability
+            top_recommendation = {
+                **top_event,
+                "ai_probability": probability,
+                "explanation": f"Nuestro sistema de IA analizó {len(events)} opciones y determinó que este plan tiene {probability}% de compatibilidad con tus preferencias."
+            }
+            ai_enabled = True
+            print(f"🤖 AI Recommendation: {top_event['title'][:50]}... (Score: {top_event['score_final']:.3f}, Probability: {probability}%)")
+
         return {
-            "events": events,
+            # To remove the results block in the UI, we signal to hide the list and focus on top card
+            "events": [],
+            "count": len(events),
+            "profile_summary": profile,
+            "top_recommendation": top_recommendation,
+            "ai_enabled": ai_enabled,
+            "present_top_only": True,
+            "hide_results_list": True
+        }
+    
+    except Exception as e:
+        print(f"Error in recommend_endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/recommend/all")
+async def recommend_all_endpoint(request: RecommendRequest):
+    """
+    Get all ranked event recommendations based on user profile.
+    This endpoint returns the full ranked list for showing alternative options.
+    
+    Args:
+        request: RecommendRequest with profile, optional location, and skip_top flag
+    
+    Returns:
+        {
+            "recommendations": [...],     # List of all recommended events
+            "count": int,                 # Number of results
+            "profile_summary": {}         # Profile used for recommendations
+        }
+    """
+    try:
+        profile = request.profile
+        user_lat = request.user_lat
+        user_lon = request.user_lon
+        skip_top = request.skip_top
+        
+        # Get recommendations
+        df_rank = compute_recommendations(
+            perfil=profile,
+            df_events=df_events,
+            vectorizer=vectorizer,
+            Xmatrix=Xmatrix,
+            IDS=IDS,
+            user_lat=user_lat,
+            user_lon=user_lon,
+        )
+        
+        if df_rank.empty:
+            return {
+                "recommendations": [],
+                "count": 0,
+                "profile_summary": profile
+            }
+        
+        # Convert to JSON-serializable format
+        events = []
+        scores = []
+        for idx, row in df_rank.iterrows():
+            score_final = float(row.get("score_final", 0))
+            scores.append(score_final)
+            event = {
+                "uid": row.get("uid", ""),
+                "title": row.get("title", ""),
+                "artist_name": row.get("Artist_name", ""),
+                "description": row.get("description", ""),
+                "category": row.get("category", ""),
+                "date_start": row.get("date_start", ""),
+                "time_start": row.get("time_start", ""),
+                "venue_name": row.get("venue_name", ""),
+                "venue_address": row.get("venue_address", ""),
+                "barrio": row.get("barrio", ""),
+                "localidad": row.get("localidad", ""),
+                "lat": float(row.get("lat")) if pd.notna(row.get("lat")) else None,
+                "lon": float(row.get("lon")) if pd.notna(row.get("lon")) else None,
+                "price_min_cop": float(row.get("price_min_cop")) if pd.notna(row.get("price_min_cop")) else None,
+                "price_max_cop": float(row.get("price_max_cop")) if pd.notna(row.get("price_max_cop")) else None,
+                "is_free": bool(row.get("is_free")) if pd.notna(row.get("is_free")) else False,
+                "age_min": str(row.get("age_min", "")),
+                "image_url": row.get("image_url", ""),
+                "source_url": row.get("source_url", ""),
+                "organizer_url": row.get("organizer_url", ""),
+                "score_final": score_final,
+                "dist_km": float(row.get("dist_km")) if pd.notna(row.get("dist_km")) else None,
+            }
+            events.append(event)
+        
+        # Skip the top recommendation if requested (user already saw it)
+        if skip_top and len(events) > 1:
+            events = events[1:]  # Skip first (top) event
+            scores = scores[1:]
+        
+        # Calculate probabilities for all events
+        max_score = max(scores) if scores else 1.0
+        min_score = min(scores) if scores else 0.0
+        
+        for event in events:
+            probability = calculate_ai_probability(event["score_final"], max_score, min_score)
+            event["ai_probability"] = probability
+            # Create a specific explanation for each
+            event["explanation"] = f"Este evento tiene {probability}% de compatibilidad con tus preferencias."
+        
+        return {
+            "recommendations": events[:10],  # Limit to top 10 alternatives
             "count": len(events),
             "profile_summary": profile
         }
     
     except Exception as e:
-        print(f"Error in recommend_endpoint: {e}")
+        print(f"Error in recommend_all_endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/categories")
+async def get_categories():
+    """
+    Get all available categories from the database, with counts of events per category.
+    Returns categories sorted by count (most popular first).
+    Consolidates categories that share the same prefix before "/" (e.g., "Teatro/Danza" and "Teatro/Familia" -> "Teatro").
+    """
+    try:
+        # Get unique categories from future events only
+        future_events = df_events[df_events["is_future"] == True]
+        
+        # Count categories
+        category_counts = future_events["category"].value_counts().to_dict()
+        
+        # Consolidate categories: group by prefix before "/"
+        consolidated = {}
+        for category, count in category_counts.items():
+            if not category or str(category).strip() == "" or str(category).lower() in {"nan", "none", ""}:
+                continue
+            
+            category_str = str(category).strip()
+            
+            # Extract base category (before "/") or use full category if no "/"
+            if "/" in category_str:
+                base_category = category_str.split("/")[0].strip()
+            else:
+                base_category = category_str
+            
+            # Normalize to title case to avoid duplicates like "Música" and "musica"
+            base_category = base_category.capitalize()
+            
+            # Sum counts for consolidated categories
+            if base_category in consolidated:
+                consolidated[base_category] += int(count)
+            else:
+                consolidated[base_category] = int(count)
+        
+        # Convert to list sorted by count (most popular first)
+        categories = [
+            {
+                "name": category,
+                "count": count
+            }
+            for category, count in sorted(consolidated.items(), key=lambda x: x[1], reverse=True)
+        ]
+        
+        return {
+            "categories": categories,
+            "total": len(categories)
+        }
+    except Exception as e:
+        print(f"Error in get_categories: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/{event_id}")
@@ -515,6 +959,38 @@ async def get_event_detail(event_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== HELPER FUNCTIONS ====================
+
+def _convert_relative_dates_to_ranges(perfil: Dict) -> Dict:
+    """
+    Convierte fechas relativas como "mañana", "pasado mañana", "hoy", "este sábado" a fecha_rango con fechas reales.
+    Esto asegura que el perfil siempre tenga fechas concretas para filtrado.
+    """
+    p = dict(perfil)
+    
+    # Si tenemos fecha relativa, convertirla a fecha_rango
+    fecha_str = p.get("fecha", "").strip().lower()
+    
+    if fecha_str and not p.get("fecha_rango"):
+        from geo_utils import parse_date_pref
+        try:
+            dr = parse_date_pref(fecha_str)
+            # Convertir a fecha_rango ISO format
+            start_date = dr.start.date().isoformat()
+            end_date = dr.end.date().isoformat()
+            p["fecha_rango"] = {
+                "start": start_date,
+                "end": end_date
+            }
+            # Limpiar fecha para evitar confusión
+            p["fecha"] = ""
+            # Debug: log conversion for troubleshooting
+            print(f"🔄 Converted relative date '{fecha_str}' → fecha_rango: {start_date} → {end_date}")
+        except Exception as e:
+            # Si no se puede parsear, dejar como está
+            print(f"⚠️ Could not parse date '{fecha_str}': {e}")
+            pass
+    
+    return p
 
 def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
     """
@@ -577,23 +1053,42 @@ def _normalize_future_like_range_if_past(dr_dict: dict) -> dict:
 def merge_profiles(base: Dict, delta: Dict) -> Dict:
     """Merge profile updates (same logic as Streamlit version)."""
     p = dict(base or {})
+    
+    # Ensure keywords exists as empty list if not present
+    if "keywords" not in p:
+        p["keywords"] = []
 
     stalk = (delta.get("smalltalk") or "").strip()
     if stalk:
         p["smalltalk"] = stalk
 
+    # Handle fecha_rango first (takes priority)
     dr = delta.get("fecha_rango")
     if isinstance(dr, dict) and (dr.get("start") and dr.get("end")):
         # Normalize date range to future if it's in the past
         p["fecha_rango"] = _normalize_future_like_range_if_past(dr)
         p["fecha"] = ""
     else:
-        if not p.get("fecha") and delta.get("fecha"):
+        # Handle fecha - update if provided
+        if delta.get("fecha"):
             p["fecha"] = str(delta["fecha"])
+        
+        # Convert relative dates (mañana, pasado mañana, hoy) to fecha_rango
+        p = _convert_relative_dates_to_ranges(p)
 
     if delta.get("categorias"):
         cats_delta = [str(c).strip().lower() for c in delta["categorias"] if str(c).strip()]
         p["categorias"] = sorted(set((p.get("categorias") or [])) | set(cats_delta))
+    
+    # keywords - merge lists, keep unique (handle None/empty cases)
+    delta_keywords = delta.get("keywords")
+    if delta_keywords:
+        if isinstance(delta_keywords, list) and len(delta_keywords) > 0:
+            kw_delta = [str(kw).strip().lower() for kw in delta_keywords if str(kw).strip()]
+            existing_kw = p.get("keywords") or []
+            if not isinstance(existing_kw, list):
+                existing_kw = []
+            p["keywords"] = list(set(existing_kw) | set(kw_delta))
 
     if not p.get("es_gratis") and delta.get("es_gratis"):
         p["es_gratis"] = str(delta["es_gratis"]).strip().lower()
@@ -651,11 +1146,19 @@ async def startup_event():
     print("🎟️  PLANORAMA API STARTED")
     print("=" * 60)
     print(f"✅ Events loaded: {len(df_events)}")
-    print(f"✅ Gemini connected: {GEMINI_OK}")
+    
+    if GEMINI_OK:
+        print(f"✅ Gemini connected: YES (Model: {GEMINI_MODEL_NAME})")
+    else:
+        print(f"⚠️  Gemini connected: NO")
+        print(f"   💡 TIP: Create 'gemini_api_key.txt' or set GOOGLE_API_KEY env var")
+    
     print(f"✅ TF-IDF vectorizer ready")
     print("=" * 60)
     print("📡 API running on http://localhost:8000")
     print("📚 Docs available at http://localhost:8000/docs")
+    print("🌐 Frontend available at http://localhost:8000/")
+    print("💚 Health check at http://localhost:8000/health")
     print("=" * 60)
 
 if __name__ == "__main__":

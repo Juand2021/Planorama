@@ -29,7 +29,7 @@ from geo_utils import (
     TAU_DEFAULT,
     R_DEFAULT,
 )
-from llm_interviewer import process_turn
+# Removed dependency on llm_interviewer - now 100% Gemini-driven
 from recommender import compute_recommendations, _normtxt, _expand_cats
 from ui_utils import render_results, render_location_map
 
@@ -87,11 +87,28 @@ def _ensure_schema(d: dict) -> dict:
     else:
         pdia_normalized = ""
     
+    # Handle keywords - ensure it's a list
+    keywords = d.get("keywords", [])
+    if not isinstance(keywords, list):
+        keywords = []
+    
+    # Handle profile_complete and next_question
+    profile_complete = d.get("profile_complete", False)
+    if not isinstance(profile_complete, bool):
+        profile_complete = False
+    
+    next_question = d.get("next_question", "")
+    if not isinstance(next_question, str):
+        next_question = ""
+    
     return {
         "smalltalk": d.get("smalltalk", ""),
+        "next_question": next_question,
+        "profile_complete": profile_complete,
         "fecha": d.get("fecha", ""),
         "fecha_rango": d.get("fecha_rango") if isinstance(d.get("fecha_rango"), dict) else None,
         "categorias": d.get("categorias", []) or [],
+        "keywords": keywords,
         "es_gratis": d.get("es_gratis", ""),
         "precio_max_cop": d.get("precio_max_cop", None),
         "dist_importa": d.get("dist_importa", ""),
@@ -101,49 +118,83 @@ def _ensure_schema(d: dict) -> dict:
     }
 
 _GEMINI_SYSTEM = (
-    "Eres un normalizador de preferencias para un recomendador de eventos en Bogotá. "
-    "Debes responder SOLO con JSON válido (sin texto fuera del JSON) y con EXACTAMENTE estas claves:\n"
+    "Eres Planorama, un asistente conversacional inteligente para recomendar eventos en Bogotá. "
+    "Tu tarea es mantener una conversación natural con el usuario, entender sus preferencias, y determinar cuándo tienes suficiente información para hacer recomendaciones.\n\n"
+    
+    "FORMATO DE RESPUESTA (OBLIGATORIO - SOLO JSON):\n"
     "{\n"
-    '  "smalltalk": "texto breve, cálido y SIN preguntas",\n'
-    '  "fecha": "hoy|mañana|fin_de_semana|YYYY-MM-DD|",\n'
-    '  "fecha_rango": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},\n'
-    '  "categorias": ["concierto|teatro|experiencia", ...],\n'
-    '  "es_gratis": "gratis|pago|indiferente|",\n'
-    '  "precio_max_cop": 120000,\n'
-    '  "dist_importa": "si|no|",\n'
-    '  "parte_del_dia": ["mañana|tarde|noche", ...] or "indiferente",\n'
-    '  "edad_usuario": null,\n'
-    '  "excluir_restriccion_edad": "si|no|indiferente"\n'
-    "}\n"
-    "Reglas de normalización (OBLIGATORIAS):\n"
-    "- Mapea TODO lo relacionado con música en vivo a 'concierto': musica|música|musica en vivo|festival|show|live|rock|pop|salsa|jazz|reggaeton|trap → concierto.\n"
-    "- Mapea stand up|stand-up|comedia a 'teatro'.\n"
-    "- Mapea feria|expo|exposición|taller|workshop|tour|recorrido|experiencia inmersiva a 'experiencia'.\n"
-    "- Permite múltiples categorías si el usuario las menciona, pero NUNCA inventes etiquetas fuera de {concierto, teatro, experiencia}.\n"
-    "- Si el usuario usa palabras fuera del set (ej. 'música'), normalízalas al set (ej. 'concierto').\n"
-    "- Si el usuario menciona un RANGO (ej. 'la próxima semana', 'entre el 10 y 12'), usa 'fecha_rango' con start/end en YYYY-MM-DD.\n"
-    "- Si da un día específico (hoy, mañana o una fecha), usa 'fecha' y deja 'fecha_rango' vacío.\n"
-    "- 'precio_max_cop' debe ser entero en COP (ej. '120k'→120000; '$150.000'→150000).\n"
-    "- 'edad_usuario' solo debe tener un número si el usuario menciona una edad ESPECÍFICA. Si dice 'no importa', 'indiferente', o no menciona edad, déjalo en null.\n"
-    "- 'excluir_restriccion_edad': 'si' si el usuario quiere filtrar por edad (menor de edad o va con niños), 'no' o 'indiferente' si no le importa la restricción de edad.\n"
-    "- 'parte_del_dia': puede ser LISTA si el usuario menciona múltiples momentos (ej. 'tarde o noche' → ['tarde','noche']). Si menciona uno solo, usa lista con un elemento (ej. ['tarde']). Si dice 'no importa', usa string 'indiferente'.\n"
-    "- 'smalltalk' DEBE ser una frase cálida SIN preguntas (ej.: '¡Listo! Tomo nota.') y SIEMPRE debe venir.\n"
-    "- NO incluyas comentarios, ni backticks, ni bloques de código; SOLO JSON estricto.\n"
-    "\n"
-    "Ejemplo 1 (usuario): \"quiero algo de música en vivo, tal vez festival\"\n"
-    "Salida JSON: {\"smalltalk\":\"¡Genial! Lo tengo.\",\"fecha\":\"\",\"fecha_rango\":null,"
-    "\"categorias\":[\"concierto\"],\"es_gratis\":\"\",\"precio_max_cop\":null,\"dist_importa\":\"\","
-    "\"parte_del_dia\":\"\",\"edad_usuario\":null,\"excluir_restriccion_edad\":\"\"}\n"
-    "\n"
-    "Ejemplo 2 (usuario): \"stand up o comedia barata este finde\"\n"
-    "Salida JSON: {\"smalltalk\":\"¡De una!\",\"fecha\":\"fin_de_semana\",\"fecha_rango\":null,"
-    "\"categorias\":[\"teatro\"],\"es_gratis\":\"pago\",\"precio_max_cop\":null,\"dist_importa\":\"\","
-    "\"parte_del_dia\":\"\",\"edad_usuario\":null,\"excluir_restriccion_edad\":\"\"}\n"
-    "\n"
-    "Ejemplo 3 (usuario): \"quiero un concierto en la tarde o noche\"\n"
-    "Salida JSON: {\"smalltalk\":\"¡Perfecto!\",\"fecha\":\"\",\"fecha_rango\":null,"
-    "\"categorias\":[\"concierto\"],\"es_gratis\":\"\",\"precio_max_cop\":null,\"dist_importa\":\"\","
-    "\"parte_del_dia\":[\"tarde\",\"noche\"],\"edad_usuario\":null,\"excluir_restriccion_edad\":\"\"}\n"
+    '  "smalltalk": "respuesta breve y cálida al mensaje del usuario (ej: \'¡Perfecto!\', \'Entendido\', \'Genial\')",\n'
+    '  "next_question": "pregunta natural sobre lo que falta O string vacío \"\" si ya tienes suficiente información",\n'
+    '  "profile_complete": true/false,  // true solo si tienes: categoría + fecha + gratis/pago + presupuesto (si es pago) + cercanía + edad\n'
+    '  "fecha": "hoy|mañana|fin_de_semana|YYYY-MM-DD|" o string vacío "",\n'
+    '  "fecha_rango": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} o null,\n'
+    '  "categorias": ["concierto|teatro|experiencia", ...] o [],\n'
+    '  "keywords": ["palabra1", "palabra2", ...] o [],  // artistas, géneros, temas específicos\n'
+    '  "es_gratis": "gratis|pago|indiferente|" o string vacío "",\n'
+    '  "precio_max_cop": 120000 o null,  // entero en COP\n'
+    '  "dist_importa": "si|no|" o string vacío "",\n'
+    '  "parte_del_dia": ["mañana|tarde|noche", ...] o "indiferente" o string vacío "",\n'
+    '  "edad_usuario": null o número entero,\n'
+    '  "excluir_restriccion_edad": "si|no|indiferente|" o string vacío ""\n'
+    "}\n\n"
+    
+    "REGLAS CRÍTICAS:\n\n"
+    
+    "1. CONVERSACIÓN NATURAL:\n"
+    "- Analiza qué información YA TIENES en el perfil actual.\n"
+    "- Identifica qué falta para poder recomendar (categoría, fecha, presupuesto, etc.).\n"
+    "- Haz PREGUNTAS CONVERSACIONALES Y NATURALES (no robóticas). Ejemplos:\n"
+    "   ❌ MAL: '¿Para cuándo te gustaría el plan? Responde: hoy, mañana o fecha YYYY-MM-DD'\n"
+    "   ✅ BIEN: '¿Para cuándo estarías interesado en ir?' o '¿Tienes alguna fecha en mente?'\n"
+    "- Si el usuario da información incompleta, haz follow-up. Ej: si dice 'el próximo mes' pero no año, calcula la fecha.\n"
+    "- Si ya tienes suficiente información, pon profile_complete=true y next_question=\"\".\n\n"
+    
+    "2. PERFIL COMPLETO (profile_complete=true) cuando tengas:\n"
+    "   ✅ categorias: al menos una categoría\n"
+    "   ✅ fecha o fecha_rango: fecha específica o rango\n"
+    "   ✅ es_gratis: 'gratis', 'pago' o 'indiferente'\n"
+    "   ✅ precio_max_cop: número si es_gratis='pago', sino puede ser null\n"
+    "   ✅ dist_importa: 'si' o 'no'\n"
+    "   ✅ (edad_usuario O excluir_restriccion_edad): al menos uno de estos\n"
+    "   ✅ parte_del_dia: lista, 'indiferente' o puede ser vacío (opcional)\n\n"
+    
+    "3. NORMALIZACIÓN DE CAMPOS:\n"
+    "- CATEGORÍAS: musica|música|concierto|festival|show|live|rock|pop|salsa|jazz|reggaeton|trap → 'concierto'\n"
+    "- CATEGORÍAS: teatro|comedia|stand up|stand-up|humor|danza|ballet|circo|musical familiar → 'teatro'\n"
+    "- CATEGORÍAS: feria|expo|exposición|taller|workshop|tour|experiencia inmersiva → 'experiencia'\n"
+    "- FECHAS: 'mañana' o 'tomorrow' → calcula la fecha real de mañana en formato YYYY-MM-DD y usa fecha_rango.\n"
+    "- FECHAS: 'pasado mañana' o 'day after tomorrow' → calcula la fecha real de pasado mañana en formato YYYY-MM-DD y usa fecha_rango.\n"
+    "- FECHAS: 'hoy' o 'today' → calcula la fecha de hoy en formato YYYY-MM-DD y usa fecha_rango.\n"
+    "- FECHAS: 'este sábado', 'este domingo', etc. → calcula la fecha real de ese día de la semana (si es hoy usa hoy, si es futuro usa esa fecha, si ya pasó esta semana usa la siguiente semana).\n"
+    "- FECHAS: 'próximo sábado', 'proximo domingo', etc. → calcula la fecha del siguiente [día] de la semana.\n"
+    "- FECHAS: 'próximo mes' → calcula fecha_rango desde HOY. 'próxima semana' → calcula fecha_rango 7 días desde HOY. NUNCA uses fechas pasadas.\n"
+    "- IMPORTANTE: Cuando el usuario dice 'mañana', 'pasado mañana', 'este sábado', etc., SIEMPRE convierte a fecha_rango con la fecha real en formato YYYY-MM-DD, NO dejes strings relativos en el campo fecha.\n"
+    "- PRECIO: '50 mil'→50000, '120k'→120000, '$150.000'→150000\n"
+    "- KEYWORDS: Extrae términos específicos (géneros, artistas, temas) para búsqueda semántica mejorada\n\n"
+    
+    "4. CONTEXTO:\n"
+    "- Si el perfil actual ya tiene información, NO la sobrescribas a menos que el usuario la cambie explícitamente.\n"
+    "- Completa SOLO los campos que faltan.\n"
+    "- Mantén un tono amigable y conversacional en smalltalk.\n\n"
+    
+    "EJEMPLO 1 - Usuario nuevo dice: 'hola, quiero ir a un concierto'\n"
+    '{"smalltalk":"¡Hola! Me encanta ayudarte a encontrar el plan perfecto.","next_question":"¿Para cuándo te gustaría ir? ¿Esta semana, el próximo fin de semana, o tienes alguna fecha en mente?","profile_complete":false,"categorias":["concierto"],"keywords":["concierto"],"fecha":"","fecha_rango":null,"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n\n'
+    
+    "EJEMPLO 2 - Usuario dice: 'mañana'\n"
+    '{"smalltalk":"¡Perfecto!","next_question":"¿Qué tipo de evento te gustaría? ¿Concierto, teatro o alguna experiencia?","profile_complete":false,"fecha":"","fecha_rango":{"start":"2025-01-XX","end":"2025-01-XX"},"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n'
+    "NOTA: Calcula la fecha real de mañana (día de hoy + 1 día) en formato YYYY-MM-DD y usa fecha_rango, NO pongas 'mañana' en el campo fecha.\n\n"
+    
+    "EJEMPLO 2b - Usuario dice: 'este sábado' (si hoy es miércoles 2025-01-15)\n"
+    '{"smalltalk":"¡Perfecto!","next_question":"¿Qué tipo de evento te gustaría?","profile_complete":false,"fecha":"","fecha_rango":{"start":"2025-01-18","end":"2025-01-19"},"es_gratis":"","precio_max_cop":null,"dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n'
+    "NOTA: 'este sábado' significa el sábado más cercano. Si hoy es miércoles, el sábado de esta semana es 2025-01-18. Calcula correctamente la fecha y úsala en fecha_rango con formato YYYY-MM-DD.\n\n"
+    
+    "EJEMPLO 3 - Usuario dice: 'el próximo mes y tengo 50 mil pesos de presupuesto'\n"
+    '{"smalltalk":"¡Perfecto! Ya tengo tu presupuesto.","next_question":"¿Te importa que el evento esté cerca de donde estás, o no tienes problema con la distancia?","profile_complete":false,"fecha":"","fecha_rango":{"start":"2025-02-01","end":"2025-03-01"},"precio_max_cop":50000,"es_gratis":"pago","dist_importa":"","parte_del_dia":"","edad_usuario":null,"excluir_restriccion_edad":""}\n\n'
+    
+    "EJEMPLO 4 - Perfil completo\n"
+    '{"smalltalk":"¡Excelente! Ya tengo toda la información que necesito.","next_question":"","profile_complete":true,"categorias":["teatro"],"keywords":["comedia"],"fecha_rango":{"start":"2025-02-01","end":"2025-03-01"},"es_gratis":"pago","precio_max_cop":50000,"dist_importa":"no","parte_del_dia":"indiferente","edad_usuario":null,"excluir_restriccion_edad":"no"}\n\n'
+    
+    "IMPORTANTE: Responde SOLO con JSON válido, sin texto adicional, sin backticks, sin comentarios."
 )
 
 def gemini_normalize(user_text: str, current_profile: Dict) -> dict:
@@ -155,27 +206,50 @@ def gemini_normalize(user_text: str, current_profile: Dict) -> dict:
         return _ensure_schema({"smalltalk": "¡Listo! Tomo nota. 😉"})
 
     try:
+        # Ensure current_profile has keywords
+        safe_profile = dict(current_profile or {})
+        if "keywords" not in safe_profile:
+            safe_profile["keywords"] = []
+        
         perfil_json = json.dumps({
-            k: v for k, v in (current_profile or {}).items()
-            if k in {"fecha","fecha_rango","categorias","es_gratis","precio_max_cop","dist_importa","parte_del_dia","edad_usuario","excluir_restriccion_edad"}
+            k: v for k, v in safe_profile.items()
+            if k in {"fecha","fecha_rango","categorias","keywords","es_gratis","precio_max_cop","dist_importa","parte_del_dia","edad_usuario","excluir_restriccion_edad"}
         }, ensure_ascii=False)
 
         prompt = (
             _GEMINI_SYSTEM
-            + "\n\nContexto_perfil_actual_JSON:\n" + perfil_json
-            + "\n\nNuevo_mensaje_usuario:\n" + (user_text or "").strip()
-            + "\n\nTarea:\n"
-              "- Interpreta el 'Nuevo_mensaje_usuario' y completa SOLO los campos que estén vacíos en 'Contexto_perfil_actual_JSON'. "
-              "Si el usuario cambia explícitamente una preferencia, actualízala. Responde SOLO con el JSON del contrato."
+            + "\n\nPERFIL_ACTUAL (información que ya tienes):\n" + perfil_json
+            + "\n\nMENSAJE_DEL_USUARIO:\n" + (user_text or "").strip()
+            + "\n\nINSTRUCCIONES:\n"
+              "1. Analiza el mensaje del usuario y actualiza el perfil con la nueva información.\n"
+              "2. Mantén toda la información previa que no sea contradicha.\n"
+              "3. Determina qué información aún falta para hacer una recomendación.\n"
+              "4. Si falta información, genera una pregunta natural en 'next_question' y pon profile_complete=false.\n"
+              "5. Si ya tienes suficiente información (categoría + fecha + precio + cercanía + edad), pon profile_complete=true y next_question=\"\".\n"
+              "6. Responde SOLO con el JSON del contrato, sin texto adicional.\n"
         )
 
         generation_config = {"temperature": 0.2}
         resp = GEMINI_MODEL.generate_content(prompt, generation_config=generation_config)
         raw = getattr(resp, "text", "") or ""
-        data = json.loads(_strip_to_json(raw))
-        return _ensure_schema(data)
-    except Exception:
-        return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊"})
+        
+        # Try to parse JSON
+        json_str = _strip_to_json(raw)
+        data = json.loads(json_str)
+        
+        # Ensure schema is correct
+        result = _ensure_schema(data)
+        return result
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error in gemini_normalize: {e}")
+        print(f"Raw response: {raw[:500] if 'raw' in locals() else 'N/A'}")
+        return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊", "next_question": "¿Podrías repetir eso de otra manera?", "profile_complete": False})
+    except Exception as e:
+        import traceback
+        print(f"❌ Error in gemini_normalize: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return _ensure_schema({"smalltalk": "¡Perfecto! Continuemos. 😊", "next_question": "¿Podrías repetir eso de otra manera?", "profile_complete": False})
 
 # 3) Carga y preparación del dataset (CSV + normalización + TF-IDF)
 DATA_PATH = os.path.join(BASE_DIR, "data", "Planorama_BD.csv")
@@ -376,6 +450,7 @@ if "perfil" not in st.session_state:
         "fecha": "",
         "fecha_rango": None,
         "categorias": [],
+        "keywords": [],
         "es_gratis": "",
         "precio_max_cop": None,
         "dist_importa": "",
@@ -396,6 +471,37 @@ if "ready" not in st.session_state:
 if "last_recs" not in st.session_state:
     st.session_state.last_recs = None
 
+def _convert_relative_dates_to_ranges(perfil: Dict) -> Dict:
+    """
+    Convierte fechas relativas como "mañana", "pasado mañana", "hoy", "este sábado" a fecha_rango con fechas reales.
+    Esto asegura que el perfil siempre tenga fechas concretas para filtrado.
+    """
+    p = dict(perfil)
+    
+    # Si tenemos fecha relativa, convertirla a fecha_rango
+    fecha_str = p.get("fecha", "").strip().lower()
+    
+    if fecha_str and not p.get("fecha_rango"):
+        try:
+            dr = parse_date_pref(fecha_str)
+            # Convertir a fecha_rango ISO format
+            start_date = dr.start.date().isoformat()
+            end_date = dr.end.date().isoformat()
+            p["fecha_rango"] = {
+                "start": start_date,
+                "end": end_date
+            }
+            # Limpiar fecha para evitar confusión
+            p["fecha"] = ""
+            # Debug: log conversion for troubleshooting
+            print(f"🔄 Converted relative date '{fecha_str}' → fecha_rango: {start_date} → {end_date}")
+        except Exception as e:
+            # Si no se puede parsear, dejar como está
+            print(f"⚠️ Could not parse date '{fecha_str}': {e}")
+            pass
+    
+    return p
+
 def merge_profiles(base: Dict, delta: Dict) -> Dict:
     p = dict(base or {})
 
@@ -410,13 +516,31 @@ def merge_profiles(base: Dict, delta: Dict) -> Dict:
         p["fecha_rango"] = _normalize_future_like_range_if_past(dr)
         p["fecha"] = ""
     else:
-        if not p.get("fecha") and delta.get("fecha"):
+        # Handle fecha - update if provided
+        if delta.get("fecha"):
             p["fecha"] = str(delta["fecha"])
+        
+        # Convert relative dates (mañana, pasado mañana, hoy) to fecha_rango
+        p = _convert_relative_dates_to_ranges(p)
 
     # categorías
     if delta.get("categorias"):
         cats_delta = [str(c).strip().lower() for c in delta["categorias"] if str(c).strip()]
         p["categorias"] = sorted(set((p.get("categorias") or [])) | set(cats_delta))
+    
+    # keywords - merge lists, keep unique (handle None/empty cases)
+    # Ensure keywords exists as empty list if not present
+    if "keywords" not in p:
+        p["keywords"] = []
+    
+    delta_keywords = delta.get("keywords")
+    if delta_keywords:
+        if isinstance(delta_keywords, list) and len(delta_keywords) > 0:
+            kw_delta = [str(kw).strip().lower() for kw in delta_keywords if str(kw).strip()]
+            existing_kw = p.get("keywords") or []
+            if not isinstance(existing_kw, list):
+                existing_kw = []
+            p["keywords"] = list(set(existing_kw) | set(kw_delta))
 
     # gratis/pago
     if not p.get("es_gratis") and delta.get("es_gratis"):
@@ -487,19 +611,33 @@ def handle_user_message(text: str) -> None:
     if not user_msg:
         return
     st.session_state.chat.append(("user", user_msg))
-    delta = gemini_normalize(user_msg, st.session_state.perfil)
-    st.session_state.perfil = merge_profiles(st.session_state.perfil, delta)
-    reply_text, _, done = process_turn("", st.session_state.perfil)
-    smalltalk = st.session_state.perfil.get("smalltalk", "").strip()
-    if done:
-        bot_text = smalltalk or "¡Perfecto! Con esa info ya puedo recomendarte."
-        st.session_state.chat.append(("bot", bot_text))
+    # Gemini now handles complete conversational flow
+    gemini_response = gemini_normalize(user_msg, st.session_state.perfil)
+    st.session_state.perfil = merge_profiles(st.session_state.perfil, gemini_response)
+    
+    # Ensure relative dates are converted to actual date ranges
+    st.session_state.perfil = _convert_relative_dates_to_ranges(st.session_state.perfil)
+    
+    # Gemini tells us if profile is complete and what to ask next
+    profile_complete = gemini_response.get("profile_complete", False)
+    next_question = gemini_response.get("next_question", "").strip()
+    smalltalk = gemini_response.get("smalltalk", "").strip()
+    
+    # Build bot reply: smalltalk + next question
+    if profile_complete:
+        bot_text = smalltalk or "¡Perfecto! Ya tengo toda la información que necesito para recomendarte."
         st.session_state.ready = True
     else:
-        ask = reply_text.strip()
-        bot_text = f"{smalltalk} {ask}" if smalltalk else ask
-        st.session_state.chat.append(("bot", bot_text))
+        # Combine smalltalk with question naturally
+        if smalltalk and next_question:
+            bot_text = f"{smalltalk} {next_question}"
+        elif next_question:
+            bot_text = next_question
+        else:
+            bot_text = smalltalk or "Entiendo, continuemos."
         st.session_state.ready = False
+    
+    st.session_state.chat.append(("bot", bot_text))
 
 # 6) UI — Chat, perfil, mapa condicional y resultados
 st.title("Planorama 🎟️ — Recomendador de planes en Bogotá")
@@ -513,6 +651,7 @@ with st.sidebar:
             "fecha": "",
             "fecha_rango": None,
             "categorias": [],
+            "keywords": [],
             "es_gratis": "",
             "precio_max_cop": None,
             "dist_importa": "",
