@@ -20,7 +20,9 @@ const state = {
     userLat: null,
     userLon: null,
     ready: false,
-    chatHistory: []
+    chatHistory: [],
+    alternativeRecommendations: [],  // Store alternative recommendations
+    hasShownAlternatives: false      // Track if alternatives have been shown
 };
 
 // Initialize app on page load
@@ -70,11 +72,19 @@ async function checkAPIHealth() {
         
         if (data.gemini_connected) {
             statusEl.textContent = '✅ Gemini conectado';
-            statusEl.style.background = 'rgba(76, 175, 80, 0.3)';
+            statusEl.style.background = '#00D9FF';
+            statusEl.style.color = '#2C3E50';
+            statusEl.style.borderColor = '#00D9FF';
+            statusEl.style.fontWeight = '700';
+            statusEl.style.boxShadow = '0 2px 12px rgba(0, 217, 255, 0.3)';
             console.log('✅ Gemini está conectado');
         } else {
             statusEl.textContent = '⚠️ Gemini no disponible';
-            statusEl.style.background = 'rgba(255, 152, 0, 0.3)';
+            statusEl.style.background = '#FFB347';
+            statusEl.style.color = '#2C3E50';
+            statusEl.style.borderColor = '#FFB347';
+            statusEl.style.fontWeight = '700';
+            statusEl.style.boxShadow = '0 2px 12px rgba(255, 179, 71, 0.3)';
             console.warn('⚠️ Gemini no está disponible según el servidor');
         }
     } catch (error) {
@@ -85,12 +95,19 @@ async function checkAPIHealth() {
             apiUrl: API_URL
         });
         statusEl.textContent = '❌ API no disponible';
-        statusEl.style.background = 'rgba(244, 67, 54, 0.3)';
+        statusEl.style.background = '#FF6B6B';
+        statusEl.style.color = 'white';
+        statusEl.style.borderColor = '#FF6B6B';
+        statusEl.style.fontWeight = '700';
+        statusEl.style.boxShadow = '0 2px 12px rgba(255, 107, 107, 0.3)';
     }
 }
 
 // Initialize application
 function initializeApp() {
+    // Initialize tab switching
+    initializeTabSwitching();
+    
     // Add initial bot message
     addBotMessage("¡Hola! 👋 Soy Planorama, tu asistente para encontrar planes en Bogotá. Cuéntame qué tipo de evento buscas y te ayudo a encontrar las mejores opciones. 😊");
     
@@ -101,6 +118,56 @@ function initializeApp() {
     
     // New search button
     document.getElementById('new-search-btn').addEventListener('click', resetSearch);
+}
+
+// Initialize tab switching functionality
+function initializeTabSwitching() {
+    const tabButtons = document.querySelectorAll('.nav-menu-btn');
+    
+    if (!tabButtons || tabButtons.length === 0) {
+        console.warn('⚠️ No tab buttons found');
+        return;
+    }
+    
+    tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const targetTab = button.dataset.tab;
+            
+            if (!targetTab) {
+                console.warn('⚠️ Button has no data-tab attribute', button);
+                return;
+            }
+            
+            // Update active tab button
+            tabButtons.forEach(btn => btn.classList.remove('active'));
+            button.classList.add('active');
+            
+            // Update active tab content
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => content.classList.remove('active'));
+            
+            const targetContent = document.getElementById(`tab-${targetTab}`);
+            if (targetContent) {
+                targetContent.classList.add('active');
+            } else {
+                console.warn(`⚠️ Tab content not found for: tab-${targetTab}`);
+            }
+            
+            // Refresh map if switching to app tab
+            if (targetTab === 'app' && typeof planoramaMap !== 'undefined' && planoramaMap) {
+                setTimeout(() => {
+                    planoramaMap.invalidateSize();
+                }, 100);
+            }
+            
+            // Refresh ScrollTrigger for GSAP animations
+            if (typeof window.refreshScrollTrigger === 'function') {
+                setTimeout(() => {
+                    window.refreshScrollTrigger();
+                }, 300);
+            }
+        });
+    });
 }
 
 // Reset search
@@ -123,13 +190,25 @@ function resetSearch() {
     state.userLon = null;
     state.ready = false;
     state.chatHistory = [];
+    state.alternativeRecommendations = [];
+    state.hasShownAlternatives = false;
     
     // Clear UI
     document.getElementById('chat-messages').innerHTML = '';
     document.getElementById('map-section').style.display = 'none';
     
+    // Hide recommendations loading and section
+    const recommendationsLoading = document.getElementById('recommendations-loading');
+    const recommendationsSection = document.getElementById('recommendations-section');
+    if (recommendationsLoading) {
+        recommendationsLoading.style.display = 'none';
+    }
+    if (recommendationsSection) {
+        recommendationsSection.style.display = 'none';
+    }
+    
     // Reset map
-    if (planoramaMap) {
+    if (typeof planoramaMap !== 'undefined' && planoramaMap) {
         planoramaMap.remove();
         planoramaMap = null;
         if (typeof userMarker !== 'undefined') {
@@ -142,6 +221,9 @@ function resetSearch() {
     
     // Add initial message
     addBotMessage("¡Hola! 👋 Soy Planorama, tu asistente para encontrar planes en Bogotá. Cuéntame qué tipo de evento buscas y te ayudo a encontrar las mejores opciones. 😊");
+    
+    // Scroll to top of chat
+    scrollChatToBottom();
 }
 
 // Update profile display
@@ -255,8 +337,8 @@ function updateMapVisibility() {
     }
 }
 
-// Get recommendations
-async function getRecommendations() {
+// Get recommendations (optionally with selected tags)
+async function getRecommendations(selectedTags = null) {
     if (!isProfileComplete()) {
         console.log('Profile not complete yet');
         return;
@@ -269,20 +351,35 @@ async function getRecommendations() {
         return;
     }
     
-    // Show loading
-    showLoading(true);
+    // Add message in chat if this is initial request
+    if (!selectedTags) {
+        addBotMessage("Perfecto! Tengo toda la información necesaria. Voy a buscar los mejores planes para ti... 🎯");
+    } else {
+        addBotMessage(`Excelente elección! Refinando recomendaciones con tus intereses seleccionados... 🎯`);
+    }
+    
+    // Show loading box below chat (5 seconds only on first load, 2 seconds for tag refinement)
+    const loadingTime = selectedTags ? 2000 : 5000;
+    showRecommendationsLoading(true);
     
     try {
+        const requestBody = {
+            profile: state.profile,
+            user_lat: state.userLat,
+            user_lon: state.userLon
+        };
+        
+        // Add selected tags if provided
+        if (selectedTags && selectedTags.length > 0) {
+            requestBody.selected_tags = selectedTags;
+        }
+        
         const response = await fetch(`${API_URL}/api/recommend`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({
-                profile: state.profile,
-                user_lat: state.userLat,
-                user_lon: state.userLon
-            })
+            body: JSON.stringify(requestBody)
         });
         
         if (!response.ok) {
@@ -292,83 +389,50 @@ async function getRecommendations() {
         const data = await response.json();
         console.log('📊 Recommendations:', data);
         
-        if (data.ai_enabled && data.top_recommendation) {
-            displayTopRecommendationInChat(data.top_recommendation, data.count);
-        } else {
-            addBotMessage('No encontré un plan destacado con IA. Intenta ajustar tus preferencias.');
-        }
+        // Store recommendations
+        state.alternativeRecommendations = data.events || [];
+        state.hasShownAlternatives = false;
+        
+        // Wait for loading time, then display recommendations or tag selection
+        setTimeout(() => {
+            showRecommendationsLoading(false);
+            
+            // Check if we need tag selection
+            if (data.needs_tag_selection && data.available_tags && data.available_tags.length > 0) {
+                // Show tag selection UI in chat
+                showTagSelectionUI(data.available_tags, data.count);
+            } else if (data.ai_enabled && data.top_recommendation) {
+                // Show recommendations
+                displayRecommendationsOutsideChat(data.top_recommendation, data.has_alternatives);
+            } else {
+                addBotMessage('No encontré planes que coincidan con tus preferencias. Intenta ajustar tus criterios.');
+            }
+        }, loadingTime);
         
     } catch (error) {
         console.error('❌ Error getting recommendations:', error);
+        showRecommendationsLoading(false);
         showError("Hubo un error al buscar recomendaciones. Por favor, intenta de nuevo.");
-    } finally {
-        showLoading(false);
     }
 }
 
 // Display a single top recommendation as a bot message in the chat
-function displayTopRecommendationInChat(topRecommendation, totalCount) {
+function displayTopRecommendationInChat(topRecommendation, totalCount, hasAlternatives) {
     const chatMessages = document.getElementById('chat-messages');
     if (!chatMessages) return;
     
-    // Intro phrase
+    // Intro phrase in English as requested
     const introDiv = document.createElement('div');
     introDiv.className = 'message message-bot';
-    introDiv.innerHTML = `<strong>Planorama:</strong> Perfecto, ya tengo la información requerida y el plan que te recomiendo es el siguiente:`;
+    introDiv.innerHTML = `<strong>Planorama:</strong> Perfect, I have the required information, and the plan I recommend is the following:`;
     chatMessages.appendChild(introDiv);
     
-    // Explanation and probability with enhanced details
+    // Explanation and probability
     const probability = topRecommendation.ai_probability || 85.0;
     const explainDiv = document.createElement('div');
-    explainDiv.className = 'message message-bot recommendation-explanation-box';
-    const countText = (typeof totalCount === 'number' && totalCount > 0) ? ` de <strong>${totalCount}</strong> recomendaciones posibles` : '';
-    
-    // Build detailed explanation
-    let detailedExplanation = `
-        <div class="recommendation-header">
-            <div class="probability-badge">
-                <span class="probability-number">${probability}%</span>
-                <span class="probability-label">Compatibilidad</span>
-            </div>
-            <div class="recommendation-rank">
-                <span class="rank-label">Recomendación Principal</span>
-                ${countText ? `<span class="rank-count">Clasificada #1 ${countText}</span>` : ''}
-            </div>
-        </div>
-        <div class="recommendation-reasons">
-            <h4>🎯 Por qué esta es tu mejor opción:</h4>
-            <p class="main-explanation">${escapeHtml(topRecommendation.explanation || 'Este evento coincide perfectamente con tus preferencias.')}</p>
-    `;
-    
-    // Add detailed matching criteria if available
-    const matchReasons = [];
-    if (topRecommendation.category_match) {
-        matchReasons.push(`✅ Coincide con tus categorías preferidas: <strong>${topRecommendation.category_match}</strong>`);
-    }
-    if (topRecommendation.date_match) {
-        matchReasons.push(`📅 Fecha perfecta para tu disponibilidad`);
-    }
-    if (topRecommendation.price_match) {
-        matchReasons.push(`💰 Dentro de tu presupuesto`);
-    }
-    if (topRecommendation.dist_km !== null && topRecommendation.dist_km !== undefined && topRecommendation.dist_km < 5) {
-        matchReasons.push(`📍 Ubicación conveniente (${topRecommendation.dist_km.toFixed(1)} km de distancia)`);
-    }
-    if (topRecommendation.age_appropriate) {
-        matchReasons.push(`👤 Apropiado para tu grupo de edad`);
-    }
-    
-    if (matchReasons.length > 0) {
-        detailedExplanation += `
-            <ul class="match-reasons">
-                ${matchReasons.map(reason => `<li>${reason}</li>`).join('')}
-            </ul>
-        `;
-    }
-    
-    detailedExplanation += `</div>`;
-    
-    explainDiv.innerHTML = detailedExplanation;
+    explainDiv.className = 'message message-bot';
+    const countText = (typeof totalCount === 'number' && totalCount > 0) ? ` · Este plan es <strong>1/${totalCount}</strong> de las posibles recomendaciones.` : '';
+    explainDiv.innerHTML = `<strong>🤖 ${probability}% de compatibilidad.</strong> ${escapeHtml(topRecommendation.explanation || '')}${countText}`;
     chatMessages.appendChild(explainDiv);
     
     // Card
@@ -377,28 +441,32 @@ function displayTopRecommendationInChat(topRecommendation, totalCount) {
     cardWrapper.innerHTML = createEventCardHTML(topRecommendation, true);
     chatMessages.appendChild(cardWrapper);
     
-    // Add button to see other options
-    if (totalCount && totalCount > 1) {
-        const optionsButtonDiv = document.createElement('div');
-        optionsButtonDiv.className = 'message message-bot';
-        optionsButtonDiv.innerHTML = `
-            <div class="alternative-options-section">
-                <p style="margin-bottom: 12px;">¿No es exactamente lo que buscas?</p>
-                <button id="show-alternatives-btn" class="btn-show-alternatives">
-                    🔄 Ver ${totalCount - 1} Otras Opciones Clasificadas
+    // Add button to show alternatives if they exist
+    if (hasAlternatives && state.alternativeRecommendations.length > 0) {
+        const alternativesPrompt = document.createElement('div');
+        alternativesPrompt.className = 'message message-bot';
+        alternativesPrompt.id = 'alternatives-prompt';
+        alternativesPrompt.innerHTML = `
+            <strong>Planorama:</strong> ¿No es lo que buscabas? 
+            <div style="margin-top: 12px;">
+                <button id="show-alternatives-btn" class="btn-show-alternatives" style="padding: 10px 24px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; border: none; border-radius: 12px; cursor: pointer; font-weight: 600; font-size: 1rem; transition: all 0.3s;">
+                    Ver otras opciones (${state.alternativeRecommendations.length})
                 </button>
             </div>
         `;
-        chatMessages.appendChild(optionsButtonDiv);
+        chatMessages.appendChild(alternativesPrompt);
         
-        // Add event listener for the button
+        // Add click handler for the button
         setTimeout(() => {
-            const showAltBtn = document.getElementById('show-alternatives-btn');
-            if (showAltBtn) {
-                showAltBtn.addEventListener('click', async () => {
-                    showAltBtn.disabled = true;
-                    showAltBtn.textContent = '⏳ Cargando alternativas...';
-                    await showAlternativeRecommendations();
+            const showAlternativesBtn = document.getElementById('show-alternatives-btn');
+            if (showAlternativesBtn) {
+                showAlternativesBtn.addEventListener('click', function() {
+                    showAlternativeRecommendations();
+                    // Disable button after clicking
+                    showAlternativesBtn.disabled = true;
+                    showAlternativesBtn.style.opacity = '0.6';
+                    showAlternativesBtn.style.cursor = 'not-allowed';
+                    showAlternativesBtn.textContent = '✓ Mostrando alternativas...';
                 });
             }
         }, 100);
@@ -495,77 +563,17 @@ function showLoading(show) {
     overlay.style.display = show ? 'flex' : 'none';
 }
 
-// Show alternative recommendations
-async function showAlternativeRecommendations() {
-    const chatMessages = document.getElementById('chat-messages');
-    if (!chatMessages) return;
-    
-    // Add loading message
-    addBotMessage("Déjame mostrarte otras excelentes opciones basadas en tus preferencias...");
-    
-    showLoading(true);
-    
-    try {
-        const response = await fetch(`${API_URL}/api/recommend/all`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                profile: state.profile,
-                user_lat: state.userLat,
-                user_lon: state.userLon,
-                skip_top: true  // Skip the top recommendation since we already showed it
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error('API request failed');
+// Show/hide recommendations loading box
+function showRecommendationsLoading(show) {
+    const loadingBox = document.getElementById('recommendations-loading');
+    if (loadingBox) {
+        loadingBox.style.display = show ? 'block' : 'none';
+        if (show) {
+            // Scroll to show the loading box
+            setTimeout(() => {
+                loadingBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
         }
-        
-        const data = await response.json();
-        console.log('📊 Alternative recommendations:', data);
-        
-        if (data.recommendations && data.recommendations.length > 0) {
-            // Display header for alternatives
-            const headerDiv = document.createElement('div');
-            headerDiv.className = 'message message-bot';
-            headerDiv.innerHTML = `
-                <div class="alternatives-header">
-                    <h3>🎯 Recomendaciones Alternativas (Clasificadas por Puntuación)</h3>
-                    <p>Aquí tienes ${data.recommendations.length} opciones más que coinciden con tus preferencias:</p>
-                </div>
-            `;
-            chatMessages.appendChild(headerDiv);
-            
-            // Display each alternative recommendation
-            data.recommendations.forEach((event, index) => {
-                const rankNumber = index + 2; // Start from #2 since #1 was the top recommendation
-                const probability = event.ai_probability || 0;
-                
-                const altDiv = document.createElement('div');
-                altDiv.className = 'message message-bot alternative-recommendation';
-                altDiv.innerHTML = `
-                    <div class="alternative-rank-badge">
-                        <span class="rank-number">#${rankNumber}</span>
-                        <span class="rank-probability">${probability}% compatibilidad</span>
-                    </div>
-                    ${createEventCardHTML(event, false)}
-                    ${event.explanation ? `<div class="alternative-explanation">💡 <em>${escapeHtml(event.explanation)}</em></div>` : ''}
-                `;
-                chatMessages.appendChild(altDiv);
-            });
-            
-            scrollChatToBottom();
-        } else {
-            addBotMessage("No se encontraron recomendaciones adicionales que coincidan con tus criterios.");
-        }
-        
-    } catch (error) {
-        console.error('❌ Error getting alternative recommendations:', error);
-        addBotMessage("Lo siento, no pude cargar las recomendaciones alternativas. Por favor, intenta de nuevo.");
-    } finally {
-        showLoading(false);
     }
 }
 
@@ -573,5 +581,231 @@ async function showAlternativeRecommendations() {
 function scrollChatToBottom() {
     const chatMessages = document.getElementById('chat-messages');
     chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Display recommendations outside the chat
+function displayRecommendationsOutsideChat(topRecommendation, hasAlternatives) {
+    const recommendationsSection = document.getElementById('recommendations-section');
+    const recommendationsContent = document.getElementById('recommendations-content');
+    
+    if (!recommendationsSection || !recommendationsContent) {
+        console.error('Recommendations section not found');
+        return;
+    }
+    
+    // Clear previous content
+    recommendationsContent.innerHTML = '';
+    
+    // Display top recommendation
+    const probability = topRecommendation.ai_probability || 0;
+    const topRecommendationHTML = `
+        <div class="recommendation-item top-recommendation">
+            <div class="recommendation-header-inline">
+                <span class="recommendation-label">🏆 Recomendación Principal</span>
+                <span class="recommendation-probability">${probability}%</span>
+            </div>
+            <p class="recommendation-explanation">${escapeHtml(topRecommendation.explanation || '')}</p>
+            ${createEventCardHTML(topRecommendation, false)}
+        </div>
+    `;
+    recommendationsContent.innerHTML += topRecommendationHTML;
+    
+    // Show alternatives button if there are alternatives
+    if (hasAlternatives && state.alternativeRecommendations.length > 0) {
+        const alternativesButtonHTML = `
+            <button id="show-alternatives-btn-outside" class="btn-show-alternatives">
+                ¿No es lo que buscabas? Ver otras ${state.alternativeRecommendations.length} opciones
+            </button>
+        `;
+        recommendationsContent.innerHTML += alternativesButtonHTML;
+        
+        // Add event listener after a delay
+        setTimeout(() => {
+            const btn = document.getElementById('show-alternatives-btn-outside');
+            if (btn) {
+                btn.addEventListener('click', function() {
+                    showAlternativeRecommendationsOutside();
+                    btn.disabled = true;
+                    btn.textContent = '✓ Mostrando todas las opciones...';
+                });
+            }
+        }, 100);
+    }
+    
+    // Show the recommendations section
+    recommendationsSection.style.display = 'block';
+    
+    // Scroll to show recommendations
+    setTimeout(() => {
+        recommendationsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 300);
+}
+
+// Show alternative recommendations outside chat
+function showAlternativeRecommendationsOutside() {
+    if (state.hasShownAlternatives || state.alternativeRecommendations.length === 0) {
+        console.log('No alternatives to show or already shown');
+        return;
+    }
+    
+    const recommendationsContent = document.getElementById('recommendations-content');
+    if (!recommendationsContent) return;
+    
+    // Mark as shown
+    state.hasShownAlternatives = true;
+    
+    // Display each alternative
+    state.alternativeRecommendations.forEach((event, index) => {
+        const probability = event.ai_probability || 0;
+        const alternativeHTML = `
+            <div class="recommendation-item">
+                <div class="recommendation-header-inline">
+                    <span class="recommendation-label">Opción ${index + 2}</span>
+                    <span class="recommendation-probability">${probability}%</span>
+                </div>
+                <p class="recommendation-explanation">${escapeHtml(event.explanation || '')}</p>
+                ${createEventCardHTML(event, false)}
+            </div>
+        `;
+        recommendationsContent.innerHTML += alternativeHTML;
+    });
+    
+    // Scroll to show new alternatives
+    setTimeout(() => {
+        const lastItem = recommendationsContent.lastElementChild;
+        if (lastItem) {
+            lastItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, 100);
+}
+
+// Show tag selection UI in chat
+function showTagSelectionUI(availableTags, totalCount) {
+    const chatMessages = document.getElementById('chat-messages');
+    if (!chatMessages) return;
+    
+    console.log('🏷️ Showing tag selection UI with', availableTags.length, 'tags');
+    
+    // Add intro message
+    const introDiv = document.createElement('div');
+    introDiv.className = 'message message-bot';
+    introDiv.innerHTML = `<strong>Planorama:</strong> Veo que hay bastantes planes que coinciden con tus preferencias (${totalCount} opciones). ¿Cuáles de estas actividades te interesan más? Selecciona las que más te atraigan:`;
+    chatMessages.appendChild(introDiv);
+    
+    // Create unique ID for this tag selection UI
+    const tagsId = `tags-${Date.now()}`;
+    const selectedTags = new Set();
+    
+    const tagsDiv = document.createElement('div');
+    tagsDiv.className = 'message message-bot tags-message';
+    tagsDiv.id = tagsId;
+    tagsDiv.innerHTML = `
+        <div class="tags-list">
+            ${availableTags.map(tagObj => `
+                <button type="button" class="tag-btn" data-tag="${escapeHtml(tagObj.tag)}">
+                    ${escapeHtml(tagObj.tag)} <span class="tag-count">(${tagObj.count})</span>
+                </button>
+            `).join('')}
+        </div>
+        <div class="tags-actions" style="margin-top: 15px; text-align: center;">
+            <button type="button" class="btn-confirm-tags" disabled style="padding: 12px 32px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; border: none; border-radius: 12px; cursor: not-allowed; font-weight: 700; font-size: 1rem; opacity: 0.5; transition: all 0.3s;">
+                ✓ Confirmar selección
+            </button>
+        </div>
+    `;
+    
+    chatMessages.appendChild(tagsDiv);
+    
+    // Wait a tick to ensure DOM is ready before adding event listeners
+    setTimeout(() => {
+        // Get references to buttons
+        const tagButtons = tagsDiv.querySelectorAll('.tag-btn');
+        const confirmButton = tagsDiv.querySelector('.btn-confirm-tags');
+        
+        if (!confirmButton) {
+            console.error('❌ Confirm button not found!');
+            return;
+        }
+        
+        if (tagButtons.length === 0) {
+            console.error('❌ No tag buttons found!');
+            return;
+        }
+        
+        // Add click handlers for tag buttons (toggle selection)
+        tagButtons.forEach(btn => {
+            // Remove any existing listeners by cloning
+            const newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const tag = newBtn.dataset.tag;
+                
+                // Toggle selection
+                if (selectedTags.has(tag)) {
+                    selectedTags.delete(tag);
+                    newBtn.classList.remove('selected');
+                } else {
+                    selectedTags.add(tag);
+                    newBtn.classList.add('selected');
+                }
+                
+                // Enable/disable confirm button based on selections
+                if (selectedTags.size > 0) {
+                    confirmButton.disabled = false;
+                    confirmButton.style.opacity = '1';
+                    confirmButton.style.cursor = 'pointer';
+                } else {
+                    confirmButton.disabled = true;
+                    confirmButton.style.opacity = '0.5';
+                    confirmButton.style.cursor = 'not-allowed';
+                }
+                
+                console.log('🏷️ Tags selected:', Array.from(selectedTags));
+            }, true);
+        });
+        
+        // Add click handler for confirm button
+        confirmButton.addEventListener('click', async function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (selectedTags.size === 0) {
+                return;
+            }
+            
+            const tagsArray = Array.from(selectedTags);
+            console.log('✅ Confirming tag selection:', tagsArray);
+            
+            // Disable all buttons to prevent double-clicking
+            tagButtons.forEach(btn => {
+                btn.disabled = true;
+                btn.style.pointerEvents = 'none';
+            });
+            confirmButton.disabled = true;
+            confirmButton.style.pointerEvents = 'none';
+            confirmButton.textContent = '✓ Enviando...';
+            
+            // Remove the tags UI to prevent further interaction
+            setTimeout(() => {
+                tagsDiv.style.opacity = '0.6';
+            }, 100);
+            
+            // Create a message showing selected tags
+            const tagsText = tagsArray.join(', ');
+            addUserMessage(`He seleccionado: ${tagsText}`);
+            
+            // Get recommendations with selected tags
+            await getRecommendations(tagsArray);
+        }, true);
+    }, 50);
+    
+    // Scroll to bottom
+    scrollChatToBottom();
+    
+    console.log('✅ Tag selection UI displayed successfully');
 }
 

@@ -11,90 +11,333 @@
     <!-- Leaflet CSS for maps -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1>🎟️ Planorama</h1>
-            <p class="subtitle">Tu asistente para encontrar planes en Bogotá</p>
-            <div class="api-status">
-                <span id="gemini-status">🔄 Conectando...</span>
+    <!-- Animated Background -->
+    <div class="animated-background">
+        <div class="gradient-orb orb-1"></div>
+        <div class="gradient-orb orb-2"></div>
+        <div class="gradient-orb orb-3"></div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="app-container">
+        <!-- Navigation Header -->
+        <nav class="nav-header">
+            <div class="nav-left">
+                <div class="nav-brand">
+                    <img src="img/planorama_logo.png" alt="Planorama" class="brand-logo">
+                    <span class="brand-name">Planorama</span>
+                </div>
             </div>
-        </header>
+            
+            <div class="nav-center">
+                <button class="nav-menu-btn active" data-tab="app">
+                    💬 Chat
+                </button>
+                <button class="nav-menu-btn" data-tab="about">
+                    ℹ️ Acerca de
+                </button>
+            </div>
+            
+            <div class="nav-right">
+                <div class="status-indicator">
+                    <span id="gemini-status" class="status-badge">🔄 Conectando...</span>
+                </div>
+            </div>
+        </nav>
 
-        <!-- Main Content -->
-        <div class="main-content">
-            <!-- Left Column: Chat -->
-            <div class="left-column">
-                <div class="chat-section">
-                    <div class="section-header">
-                        <h2>💬 Conversación</h2>
-                        <button id="new-search-btn" class="btn-secondary">🧹 Nueva búsqueda</button>
-                    </div>
-                    <p class="chat-subtitle">Habla como gustes. Yo me encargo de entenderte. 😉</p>
-                    
-                    <!-- Chat Messages -->
-                    <div id="chat-messages" class="chat-messages">
-                        <!-- Messages will be added here dynamically -->
+        <!-- Tab Content Container -->
+        <main class="tab-content-wrapper">
+            <!-- APP TAB: Main Planorama Functionality -->
+            <div class="tab-content active" id="tab-app">
+                <div class="app-layout">
+                    <!-- Left Panel: Chat -->
+                    <div class="chat-panel">
+                        <div class="panel-card">
+                            <div class="panel-header">
+                                <div class="header-content">
+                                    <h2 class="panel-title">💬 Conversación</h2>
+                                    <p class="panel-subtitle">Habla naturalmente, yo me encargo del resto</p>
+                                </div>
+                                <button id="new-search-btn" class="btn-icon">
+                                    <span>🧹</span>
+                                    <span class="btn-tooltip">Nueva búsqueda</span>
+                                </button>
+                            </div>
+                            
+                            <!-- Chat Messages -->
+                            <div id="chat-messages" class="chat-messages">
+                                <!-- Messages will be added here dynamically -->
+                            </div>
+
+                            <!-- Chat Input -->
+                            <form id="chat-form" class="chat-input-container">
+                                <div class="input-wrapper">
+                                    <input 
+                                        type="text" 
+                                        id="chat-input" 
+                                        placeholder="Ej.: Mañana quiero algo de comedia cerca de mí..."
+                                        autocomplete="off"
+                                    >
+                                    <button type="submit" id="send-btn" class="btn-send">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <!-- Recommendations Loading Box -->
+                        <div id="recommendations-loading" class="recommendations-loading" style="display: none;">
+                            <div class="loading-box">
+                                <div class="loading-spinner-large"></div>
+                                <h3 class="loading-title">🎯 Recopilando información</h3>
+                                <p class="loading-message">Estamos analizando tus preferencias para crear el plan perfecto...</p>
+                                <div class="loading-progress">
+                                    <div class="loading-progress-bar"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recommendations Display Area -->
+                        <div id="recommendations-section" class="recommendations-section" style="display: none;">
+                            <div class="panel-card recommendations-card">
+                                <div class="recommendations-header">
+                                    <h2 class="recommendations-title">🎉 Tus Recomendaciones</h2>
+                                    <p class="recommendations-subtitle">Aquí están los mejores planes que encontramos para ti</p>
+                                </div>
+                                <div id="recommendations-content" class="recommendations-content">
+                                    <!-- Recommendations will be displayed here -->
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <!-- Chat Input -->
-                    <form id="chat-form" class="chat-input-form">
-                        <input 
-                            type="text" 
-                            id="chat-input" 
-                            placeholder="Ej.: Mañana quiero algo de comedia cerca de mí"
-                            autocomplete="off"
-                        >
-                        <button type="submit" id="send-btn" class="btn-primary">Enviar</button>
-                    </form>
+                    <!-- Right Panel: Profile & Map -->
+                    <div class="sidebar-panel">
+                        <!-- Profile Card -->
+                        <div class="panel-card profile-card">
+                            <div class="card-header">
+                                <h3 class="card-title">🧾 Tu Perfil</h3>
+                            </div>
+                            <div id="profile-display" class="profile-content">
+                                <div class="profile-item">
+                                    <span class="profile-label">📅 Fecha</span>
+                                    <span class="profile-value" id="profile-fecha">—</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">🎭 Categorías</span>
+                                    <span class="profile-value" id="profile-categorias">—</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">💰 Tipo</span>
+                                    <span class="profile-value" id="profile-gratis">—</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">💵 Presupuesto</span>
+                                    <span class="profile-value" id="profile-presupuesto">—</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">📍 Cercanía</span>
+                                    <span class="profile-value" id="profile-cercania">—</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">🎂 Edad</span>
+                                    <span class="profile-value" id="profile-edad">no especificada</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">🔞 Restricción</span>
+                                    <span class="profile-value" id="profile-restriccion">—</span>
+                                </div>
+                                <div class="profile-item">
+                                    <span class="profile-label">⏰ Momento</span>
+                                    <span class="profile-value" id="profile-parte-dia">—</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Map Card (conditional) -->
+                        <div id="map-section" class="panel-card map-card" style="display: none;">
+                            <div class="card-header">
+                                <h3 class="card-title">📍 Marca tu zona</h3>
+                                <p class="card-subtitle">Haz clic en el mapa para fijar tu ubicación</p>
+                            </div>
+                            <div id="map" class="map-container"></div>
+                            <div id="map-status" class="map-status"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <!-- Right Column: Profile, Map, Results -->
-            <div class="right-column">
-                <!-- Profile Summary -->
-                <div class="profile-section">
-                    <h2>🧾 Tu perfil</h2>
-                    <div id="profile-display" class="profile-display">
-                        <ul id="profile-list">
-                            <li><strong>Fecha:</strong> <span id="profile-fecha">—</span></li>
-                            <li><strong>Categorías:</strong> <span id="profile-categorias">—</span></li>
-                            <li><strong>Gratis/Pago:</strong> <span id="profile-gratis">—</span> · <strong>Presupuesto máx:</strong> <span id="profile-presupuesto">—</span></li>
-                            <li><strong>Cercanía importa:</strong> <span id="profile-cercania">—</span></li>
-                            <li><strong>Edad:</strong> <span id="profile-edad">no especificada</span> · <strong>Excluir por restricción:</strong> <span id="profile-restriccion">—</span></li>
-                            <li><strong>Parte del día:</strong> <span id="profile-parte-dia">—</span></li>
-                        </ul>
-                    </div>
-                </div>
+            <!-- ABOUT TAB: Information about Planorama -->
+            <div class="tab-content" id="tab-about">
+                <div class="about-container">
+                    <!-- Hero Section -->
+                    <section class="about-hero">
+                        <div class="hero-content">
+                            <div class="hero-icon">🎟️</div>
+                            <h1 class="hero-title">Planorama</h1>
+                            <p class="hero-tagline">Tu asistente inteligente para descubrir eventos en Bogotá</p>
+                        </div>
+                    </section>
 
-                <!-- Map Section (conditional) -->
-                <div id="map-section" class="map-section" style="display: none;">
-                    <h2>📍 Marca tu zona</h2>
-                    <p class="map-subtitle">Haz clic en el mapa para fijar tu ubicación aproximada.</p>
-                    <div id="map" class="map-container"></div>
-                    <div id="map-status" class="map-status"></div>
-                </div>
+                    <!-- What is Planorama -->
+                    <section class="about-section">
+                        <div class="section-content">
+                            <div class="section-icon">🎯</div>
+                            <h2 class="section-title">¿Qué es Planorama?</h2>
+                            <p class="section-text">
+                                Planorama es un asistente conversacional impulsado por inteligencia artificial que te ayuda a encontrar 
+                                los mejores eventos en Bogotá. A través de una conversación natural, entendemos tus preferencias y te 
+                                recomendamos eventos que realmente se ajustan a lo que buscas.
+                            </p>
+                        </div>
+                    </section>
 
-                
+                    <!-- How to Use -->
+                    <section class="about-section">
+                        <div class="section-content">
+                            <div class="section-icon">📝</div>
+                            <h2 class="section-title">¿Cómo usar Planorama?</h2>
+                            <div class="steps-container">
+                                <div class="step-card">
+                                    <div class="step-number">1</div>
+                                    <h3 class="step-title">Inicia la conversación</h3>
+                                    <p class="step-description">
+                                        Simplemente cuéntale a Planorama qué tipo de plan estás buscando. 
+                                        Puedes hablar de forma natural, como si conversaras con un amigo.
+                                    </p>
+                                </div>
+                                <div class="step-card">
+                                    <div class="step-number">2</div>
+                                    <h3 class="step-title">Comparte tus preferencias</h3>
+                                    <p class="step-description">
+                                        El asistente te hará preguntas sobre fecha, categorías, presupuesto, 
+                                        ubicación y otros detalles para entender mejor lo que buscas.
+                                    </p>
+                                </div>
+                                <div class="step-card">
+                                    <div class="step-number">3</div>
+                                    <h3 class="step-title">Recibe recomendaciones</h3>
+                                    <p class="step-description">
+                                        Una vez que tengamos toda la información, nuestra IA procesará miles de 
+                                        eventos y te presentará la mejor opción para ti, con una explicación personalizada.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- How AI Works -->
+                    <section class="about-section">
+                        <div class="section-content">
+                            <div class="section-icon">🤖</div>
+                            <h2 class="section-title">¿Cómo funciona la IA?</h2>
+                            <div class="ai-features">
+                                <div class="feature-card">
+                                    <div class="feature-icon">💬</div>
+                                    <h3 class="feature-title">Procesamiento Natural del Lenguaje</h3>
+                                    <p class="feature-text">
+                                        Utilizamos Google Gemini para entender tus mensajes de forma natural, 
+                                        extrayendo preferencias y contexto de la conversación.
+                                    </p>
+                                </div>
+                                <div class="feature-card">
+                                    <div class="feature-icon">🎯</div>
+                                    <h3 class="feature-title">Sistema de Recomendación Inteligente</h3>
+                                    <p class="feature-text">
+                                        Nuestro algoritmo analiza múltiples factores como categorías, fechas, 
+                                        precios, ubicación y restricciones para encontrar eventos relevantes.
+                                    </p>
+                                </div>
+                                <div class="feature-card">
+                                    <div class="feature-icon">📊</div>
+                                    <h3 class="feature-title">Análisis de Compatibilidad</h3>
+                                    <p class="feature-text">
+                                        La IA calcula un porcentaje de compatibilidad para cada evento y te 
+                                        explica por qué es una buena opción para ti.
+                                    </p>
+                                </div>
+                                <div class="feature-card">
+                                    <div class="feature-icon">📍</div>
+                                    <h3 class="feature-title">Filtrado Geográfico</h3>
+                                    <p class="feature-text">
+                                        Si la cercanía es importante para ti, calculamos distancias desde 
+                                        tu ubicación para priorizar eventos cercanos.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Technical Details -->
+                    <section class="about-section tech-section">
+                        <div class="section-content">
+                            <div class="section-icon">⚙️</div>
+                            <h2 class="section-title">Tecnología detrás de Planorama</h2>
+                            <div class="tech-stack">
+                                <div class="tech-item">
+                                    <div class="tech-badge">🤖 Google Gemini</div>
+                                    <p>Modelo de lenguaje avanzado para entender conversaciones</p>
+                                </div>
+                                <div class="tech-item">
+                                    <div class="tech-badge">🐍 Python + FastAPI</div>
+                                    <p>Backend robusto y eficiente para procesamiento</p>
+                                </div>
+                                <div class="tech-item">
+                                    <div class="tech-badge">🗺️ Leaflet</div>
+                                    <p>Mapas interactivos para selección de ubicación</p>
+                                </div>
+                                <div class="tech-item">
+                                    <div class="tech-badge">✨ GSAP</div>
+                                    <p>Animaciones suaves y experiencia fluida</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- CTA Section -->
+                    <section class="about-cta">
+                        <h2 class="cta-title">¿Listo para descubrir tu próximo plan?</h2>
+                        <button class="cta-button" onclick="switchToAppTab()">
+                            Comenzar ahora
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M5 12h14M12 5l7 7-7 7"/>
+                            </svg>
+                        </button>
+                    </section>
+                </div>
             </div>
-        </div>
+        </main>
     </div>
 
     <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay" style="display: none;">
-        <div class="spinner"></div>
-        <p>Buscando los mejores planes para ti...</p>
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p class="loading-text">Buscando los mejores planes para ti...</p>
+        </div>
     </div>
 
     <!-- Scripts -->
+    <!-- GSAP for animations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js"></script>
+    
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
     <!-- Custom JS -->
+    <script src="js/animations.js"></script>
     <script src="js/app.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/map.js"></script>

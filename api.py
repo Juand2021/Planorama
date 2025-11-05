@@ -500,7 +500,7 @@ class RecommendRequest(BaseModel):
     profile: Dict
     user_lat: Optional[float] = None
     user_lon: Optional[float] = None
-    skip_top: Optional[bool] = False  # For alternative recommendations
+    selected_tags: Optional[list] = None
 
 class LocationUpdate(BaseModel):
     lat: float
@@ -694,6 +694,50 @@ async def recommend_endpoint(request: RecommendRequest):
                 "ai_enabled": False
             }
         
+        # Check if user has selected specific tags for filtering
+        selected_tags = getattr(request, 'selected_tags', None)
+        if selected_tags and len(selected_tags) > 0:
+            # Filter events by selected tags
+            print(f"🏷️ Filtering by selected tags: {selected_tags}")
+            mask = df_rank['tags'].apply(lambda x: any(tag.strip().lower() in str(x).lower() for tag in selected_tags) if pd.notna(x) else False)
+            df_rank = df_rank[mask]
+            print(f"📊 After tag filtering: {len(df_rank)} events")
+            
+            if df_rank.empty:
+                return {
+                    "events": [],
+                    "count": 0,
+                    "profile_summary": profile,
+                    "top_recommendation": None,
+                    "ai_enabled": False,
+                    "needs_tag_selection": False
+                }
+        
+        # Check if we have many recommendations and should ask for tag refinement
+        needs_tag_selection = False
+        available_tags = []
+        
+        if len(df_rank) >= 3 and not selected_tags:
+            # Extract unique tags from all recommendations
+            all_tags = []
+            for _, row in df_rank.iterrows():
+                tags_str = row.get("tags", "")
+                if pd.notna(tags_str) and tags_str:
+                    # Split by comma and clean up
+                    tags = [tag.strip() for tag in str(tags_str).split(",")]
+                    all_tags.extend(tags)
+            
+            # Get unique tags and count occurrences
+            from collections import Counter
+            tag_counts = Counter(all_tags)
+            # Sort by frequency and take top tags
+            available_tags = [{"tag": tag, "count": count} for tag, count in tag_counts.most_common(15)]
+            
+            if len(available_tags) > 0:
+                needs_tag_selection = True
+                print(f"🏷️ Found {len(available_tags)} unique tags across {len(df_rank)} events")
+                print(f"🏷️ Top tags: {[t['tag'] for t in available_tags[:5]]}")
+        
         # Convert to JSON-serializable format
         events = []
         scores = []
@@ -706,6 +750,7 @@ async def recommend_endpoint(request: RecommendRequest):
                 "artist_name": row.get("Artist_name", ""),
                 "description": row.get("description", ""),
                 "category": row.get("category", ""),
+                "tags": row.get("tags", ""),
                 "date_start": row.get("date_start", ""),
                 "time_start": row.get("time_start", ""),
                 "venue_name": row.get("venue_name", ""),
@@ -726,140 +771,54 @@ async def recommend_endpoint(request: RecommendRequest):
             }
             events.append(event)
         
-        # AI Recommendation System: Always compute a single top recommendation
+        # AI Recommendation System: Compute probabilities for all recommendations
         # This uses TF-IDF + cosine similarity that was already computed in compute_recommendations
         top_recommendation = None
+        alternative_recommendations = []
         ai_enabled = False
 
-        # Get the top event (highest score_final) if available
-        if len(events) >= 1:
-            top_event = events[0]
-
-            # Calculate probability percentage
-            max_score = max(scores) if scores else 1.0
-            min_score = min(scores) if scores else 0.0
-            probability = calculate_ai_probability(top_event["score_final"], max_score, min_score)
-
-            # Add probability to top event and craft explanation
-            top_event["ai_probability"] = probability
-            top_recommendation = {
-                **top_event,
-                "ai_probability": probability,
-                "explanation": f"Nuestro sistema de IA analizó {len(events)} opciones y determinó que este plan tiene {probability}% de compatibilidad con tus preferencias."
-            }
-            ai_enabled = True
-            print(f"🤖 AI Recommendation: {top_event['title'][:50]}... (Score: {top_event['score_final']:.3f}, Probability: {probability}%)")
+        # Calculate probability percentage for all events
+        max_score = max(scores) if scores else 1.0
+        min_score = min(scores) if scores else 0.0
+        
+        # Process all events and add probability scores
+        for idx, event in enumerate(events):
+            probability = calculate_ai_probability(event["score_final"], max_score, min_score)
+            event["ai_probability"] = probability
+            
+            # First event is the top recommendation
+            if idx == 0:
+                top_recommendation = {
+                    **event,
+                    "ai_probability": probability,
+                    "explanation": f"Nuestro sistema de IA analizó {len(events)} opciones usando TF-IDF + similitud de coseno y encontró que este plan tiene {probability}% de probabilidad de gustarte."
+                }
+                ai_enabled = True
+                print(f"🤖 AI Top Recommendation: {event['title'][:50]}... (Score: {event['score_final']:.3f}, Probability: {probability}%)")
+            else:
+                # Store other options as alternatives (limit to top 10 alternatives)
+                if len(alternative_recommendations) < 10:
+                    alternative_recommendations.append({
+                        **event,
+                        "ai_probability": probability,
+                        "explanation": f"Este plan tiene {probability}% de probabilidad de gustarte según nuestro análisis."
+                    })
+                    print(f"   Alternative #{idx}: {event['title'][:50]}... (Probability: {probability}%)")
 
         return {
-            # To remove the results block in the UI, we signal to hide the list and focus on top card
-            "events": [],
+            "events": alternative_recommendations,  # Send alternatives to frontend
             "count": len(events),
             "profile_summary": profile,
             "top_recommendation": top_recommendation,
             "ai_enabled": ai_enabled,
             "present_top_only": True,
-            "hide_results_list": True
+            "has_alternatives": len(alternative_recommendations) > 0,
+            "needs_tag_selection": needs_tag_selection,
+            "available_tags": available_tags
         }
     
     except Exception as e:
         print(f"Error in recommend_endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/recommend/all")
-async def recommend_all_endpoint(request: RecommendRequest):
-    """
-    Get all ranked event recommendations based on user profile.
-    This endpoint returns the full ranked list for showing alternative options.
-    
-    Args:
-        request: RecommendRequest with profile, optional location, and skip_top flag
-    
-    Returns:
-        {
-            "recommendations": [...],     # List of all recommended events
-            "count": int,                 # Number of results
-            "profile_summary": {}         # Profile used for recommendations
-        }
-    """
-    try:
-        profile = request.profile
-        user_lat = request.user_lat
-        user_lon = request.user_lon
-        skip_top = request.skip_top
-        
-        # Get recommendations
-        df_rank = compute_recommendations(
-            perfil=profile,
-            df_events=df_events,
-            vectorizer=vectorizer,
-            Xmatrix=Xmatrix,
-            IDS=IDS,
-            user_lat=user_lat,
-            user_lon=user_lon,
-        )
-        
-        if df_rank.empty:
-            return {
-                "recommendations": [],
-                "count": 0,
-                "profile_summary": profile
-            }
-        
-        # Convert to JSON-serializable format
-        events = []
-        scores = []
-        for idx, row in df_rank.iterrows():
-            score_final = float(row.get("score_final", 0))
-            scores.append(score_final)
-            event = {
-                "uid": row.get("uid", ""),
-                "title": row.get("title", ""),
-                "artist_name": row.get("Artist_name", ""),
-                "description": row.get("description", ""),
-                "category": row.get("category", ""),
-                "date_start": row.get("date_start", ""),
-                "time_start": row.get("time_start", ""),
-                "venue_name": row.get("venue_name", ""),
-                "venue_address": row.get("venue_address", ""),
-                "barrio": row.get("barrio", ""),
-                "localidad": row.get("localidad", ""),
-                "lat": float(row.get("lat")) if pd.notna(row.get("lat")) else None,
-                "lon": float(row.get("lon")) if pd.notna(row.get("lon")) else None,
-                "price_min_cop": float(row.get("price_min_cop")) if pd.notna(row.get("price_min_cop")) else None,
-                "price_max_cop": float(row.get("price_max_cop")) if pd.notna(row.get("price_max_cop")) else None,
-                "is_free": bool(row.get("is_free")) if pd.notna(row.get("is_free")) else False,
-                "age_min": str(row.get("age_min", "")),
-                "image_url": row.get("image_url", ""),
-                "source_url": row.get("source_url", ""),
-                "organizer_url": row.get("organizer_url", ""),
-                "score_final": score_final,
-                "dist_km": float(row.get("dist_km")) if pd.notna(row.get("dist_km")) else None,
-            }
-            events.append(event)
-        
-        # Skip the top recommendation if requested (user already saw it)
-        if skip_top and len(events) > 1:
-            events = events[1:]  # Skip first (top) event
-            scores = scores[1:]
-        
-        # Calculate probabilities for all events
-        max_score = max(scores) if scores else 1.0
-        min_score = min(scores) if scores else 0.0
-        
-        for event in events:
-            probability = calculate_ai_probability(event["score_final"], max_score, min_score)
-            event["ai_probability"] = probability
-            # Create a specific explanation for each
-            event["explanation"] = f"Este evento tiene {probability}% de compatibilidad con tus preferencias."
-        
-        return {
-            "recommendations": events[:10],  # Limit to top 10 alternatives
-            "count": len(events),
-            "profile_summary": profile
-        }
-    
-    except Exception as e:
-        print(f"Error in recommend_all_endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/categories")

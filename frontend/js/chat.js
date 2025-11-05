@@ -301,6 +301,13 @@ async function showCategoriesList() {
         
         console.log('✅ Categories list displayed successfully');
         
+        // Trigger GSAP animation for categories if available
+        setTimeout(() => {
+            if (typeof window.animateCategories === 'function') {
+                window.animateCategories();
+            }
+        }, 100);
+        
     } catch (error) {
         console.error('❌ Error loading categories:', error);
         addBotMessage("Lo siento, no pude cargar las categorías. Por favor, intenta de nuevo.");
