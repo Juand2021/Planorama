@@ -10,6 +10,7 @@ import sys
 import json
 import warnings
 from typing import Optional, Dict, List
+import csv
 from datetime import datetime
 
 # Setup paths
@@ -326,7 +327,7 @@ def gemini_normalize(user_text: str, current_profile: Dict) -> dict:
 DATA_PATH = os.path.join(BASE_DIR, "data", "Planorama_BD.csv")
 
 def load_events_from_csv(path: str) -> pd.DataFrame:
-    """Load and preprocess events data (same as Streamlit version)."""
+    """Load and preprocess events data with robust CSV parsing."""
     import unicodedata
     import re
     
@@ -336,10 +337,74 @@ def load_events_from_csv(path: str) -> pd.DataFrame:
         s = s.encode("ascii", "ignore").decode("ascii")
         return s.lower().strip()
     
-    try:
-        df = pd.read_csv(path, encoding="utf-8", dtype=str, keep_default_na=False)
-    except Exception:
-        df = pd.read_csv(path, encoding="latin-1", dtype=str, keep_default_na=False)
+    # Robust CSV read: try multiple encodings; sniff delimiter/quote; fallback to common seps
+    encodings = ["utf-8", "utf-8-sig", "cp1252", "latin-1"]
+    fallback_seps = [",", ";", "\t", "|"]
+    last_err = None
+    df = None
+    for enc in encodings:
+        try:
+            # Read a small sample to sniff dialect
+            with open(path, "r", encoding=enc, errors="replace") as f:
+                sample = f.read(65536)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters="," ";\t|")
+                sep = dialect.delimiter
+                quotechar = getattr(dialect, "quotechar", '"') or '"'
+                df_try = pd.read_csv(
+                    path,
+                    encoding=enc,
+                    sep=sep,
+                    quotechar=quotechar,
+                    engine="python",
+                    dtype=str,
+                    keep_default_na=False,
+                    on_bad_lines="skip",
+                )
+                if df_try.shape[1] >= 2:
+                    df = df_try
+                    break
+            except Exception as e_sniff:
+                last_err = e_sniff
+                # Fallback to common separators
+                for sep in fallback_seps:
+                    try:
+                        df_try = pd.read_csv(
+                            path,
+                            encoding=enc,
+                            sep=sep,
+                            engine="python",
+                            dtype=str,
+                            keep_default_na=False,
+                            on_bad_lines="skip",
+                        )
+                        if df_try.shape[1] >= 2:
+                            df = df_try
+                            break
+                    except Exception as e_sep:
+                        last_err = e_sep
+                if df is not None:
+                    break
+        except Exception as e_file:
+            last_err = e_file
+        if df is not None:
+            break
+    if df is None:
+        raise RuntimeError(f"Could not read CSV with common encodings/separators. Last error: {last_err}")
+    
+    # Ensure simple RangeIndex (avoid MultiIndex index issues)
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index(drop=True)
+    
+    # Flatten MultiIndex columns if present
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            "_".join([str(part) for part in col if str(part) and str(part).lower() != "nan"]).strip()
+            for col in df.columns
+        ]
+    
+    # Normalize column names: strip spaces and unify common variants
+    df.columns = [str(c).strip() for c in df.columns]
 
     expected = [
         "event_id","title","Artist_name","description","category","audience","tags",
@@ -355,7 +420,11 @@ def load_events_from_csv(path: str) -> pd.DataFrame:
     for c in df.columns:
         df[c] = df[c].astype(str).str.strip()
 
-    df["uid"] = df["event_id"].where(df["event_id"].str.strip() != "", other=df.index.astype(str))
+    # Build stable UID even if index was MultiIndex originally
+    if "event_id" in df.columns and df["event_id"].notna().any():
+        df["uid"] = df["event_id"].where(df["event_id"].str.strip() != "", other=df.reset_index().index.astype(str))
+    else:
+        df["uid"] = df.reset_index().index.astype(str)
     
     # Parse dates - suppress warnings since format may vary and we handle errors gracefully
     with warnings.catch_warnings():
@@ -452,41 +521,16 @@ print(f"✅ Loaded {len(df_events)} events")
 def get_available_categories(df: pd.DataFrame) -> List[str]:
     """
     Get list of unique categories from future events.
-    Consolidates categories that share the same prefix before "/" (e.g., "Teatro/Danza" and "Teatro/Familia" -> "Teatro").
+    Uses the full normalized category string as-is (no consolidation by "/").
     """
     future_events = df[df["is_future"] == True]
-    category_counts = future_events["category"].value_counts().to_dict()
-    
-    # Consolidate categories: group by prefix before "/"
-    consolidated = {}
-    for category, count in category_counts.items():
-        if not category or str(category).strip() == "" or str(category).lower() in {"nan", "none", ""}:
-            continue
-        
-        category_str = str(category).strip()
-        
-        # Extract base category (before "/") or use full category if no "/"
-        if "/" in category_str:
-            base_category = category_str.split("/")[0].strip()
-        else:
-            base_category = category_str
-        
-        # Normalize to title case to avoid duplicates like "Música" and "musica"
-        base_category = base_category.capitalize()
-        
-        # Sum counts for consolidated categories
-        if base_category in consolidated:
-            consolidated[base_category] += count
-        else:
-            consolidated[base_category] = count
-    
-    # Sort by count (most popular first)
-    valid_categories_sorted = sorted(
-        consolidated.keys(), 
-        key=lambda x: consolidated.get(x, 0), 
-        reverse=True
-    )
-    return valid_categories_sorted
+    # Normalize, filter empties, and sort by frequency
+    cats_series = future_events["category"].fillna("").astype(str).map(lambda s: s.strip())
+    cats_series = cats_series[cats_series.str.len() > 0]
+    # Title-case first letter for display consistency (keeps accents)
+    cats_series = cats_series.map(lambda s: s[:1].upper() + s[1:] if s else s)
+    counts = cats_series.value_counts()
+    return counts.index.tolist()
 
 AVAILABLE_CATEGORIES = get_available_categories(df_events)
 print(f"📋 Available categories ({len(AVAILABLE_CATEGORIES)}): {', '.join(AVAILABLE_CATEGORIES[:10])}...")
@@ -826,45 +870,20 @@ async def get_categories():
     """
     Get all available categories from the database, with counts of events per category.
     Returns categories sorted by count (most popular first).
-    Consolidates categories that share the same prefix before "/" (e.g., "Teatro/Danza" and "Teatro/Familia" -> "Teatro").
+    Uses the full normalized category string as-is (no consolidation by "/").
     """
     try:
         # Get unique categories from future events only
         future_events = df_events[df_events["is_future"] == True]
         
-        # Count categories
-        category_counts = future_events["category"].value_counts().to_dict()
+        # Count normalized categories (no consolidation by "/")
+        cats_series = future_events["category"].fillna("").astype(str).map(lambda s: s.strip())
+        cats_series = cats_series[cats_series.str.len() > 0]
+        cats_series = cats_series.map(lambda s: s[:1].upper() + s[1:] if s else s)
+        counts = cats_series.value_counts()
         
-        # Consolidate categories: group by prefix before "/"
-        consolidated = {}
-        for category, count in category_counts.items():
-            if not category or str(category).strip() == "" or str(category).lower() in {"nan", "none", ""}:
-                continue
-            
-            category_str = str(category).strip()
-            
-            # Extract base category (before "/") or use full category if no "/"
-            if "/" in category_str:
-                base_category = category_str.split("/")[0].strip()
-            else:
-                base_category = category_str
-            
-            # Normalize to title case to avoid duplicates like "Música" and "musica"
-            base_category = base_category.capitalize()
-            
-            # Sum counts for consolidated categories
-            if base_category in consolidated:
-                consolidated[base_category] += int(count)
-            else:
-                consolidated[base_category] = int(count)
-        
-        # Convert to list sorted by count (most popular first)
         categories = [
-            {
-                "name": category,
-                "count": count
-            }
-            for category, count in sorted(consolidated.items(), key=lambda x: x[1], reverse=True)
+            {"name": cat, "count": int(count)} for cat, count in counts.items()
         ]
         
         return {

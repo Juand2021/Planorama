@@ -1178,6 +1178,7 @@ body {
 /* ==================== CATEGORIES (inside chat) ==================== */
 .categories-message {
     max-width: 90% !important;
+    position: relative; /* ensure content sits above any background effects */
 }
 
 .categories-list {
@@ -1185,11 +1186,13 @@ body {
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 10px;
     margin-top: 16px;
+    position: relative;
+    z-index: 1; /* avoid being dimmed by accidental overlays */
 }
 
 .category-btn {
     padding: 12px 16px;
-    background: #f8fafc;
+    background: #ffffff; /* Ensure strong contrast and avoid washed-out look */
     border: 2px solid #e2e8f0;
     border-radius: var(--border-radius-sm);
     cursor: pointer;
@@ -1197,6 +1200,9 @@ body {
     font-weight: 500;
     transition: all var(--transition-fast);
     text-align: center;
+    color: var(--text-primary); /* Explicit text color to prevent browser default dimming */
+    opacity: 1 !important; /* avoid unintended low-contrast look */
+    box-shadow: 0 2px 0 rgba(0,0,0,0.02);
 }
 
 .category-btn:hover {
